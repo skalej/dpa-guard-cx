@@ -8,8 +8,7 @@ from pathlib import Path
 
 import boto3
 from docx import Document
-from openai import OpenAI
-from openai._exceptions import APIConnectionError, APIError, APITimeoutError, RateLimitError
+from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError
 from pgvector.sqlalchemy import Vector
 from pypdf import PdfReader
 import yaml
@@ -186,6 +185,164 @@ def embed_texts_openai(texts: list[str]) -> list[list[float]]:
     return _retry(_call)
 
 
+def generate_structured_openai(prompt: str, json_schema: dict) -> dict:
+    if not llm_enabled or llm_provider != "openai":
+        raise RuntimeError("LLM is disabled")
+    if not openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for LLM generation")
+    client = OpenAI(api_key=openai_api_key)
+
+    def _call():
+        response = client.chat.completions.create(
+            model=openai_model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_schema", "json_schema": json_schema},
+            timeout=30,
+        )
+        content = response.choices[0].message.content or ""
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            start = content.find("{")
+            end = content.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                try:
+                    return json.loads(content[start : end + 1])
+                except json.JSONDecodeError:
+                    pass
+            raise RuntimeError("LLM returned invalid JSON")
+
+    return _retry(_call)
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…"
+
+
+def build_llm_prompt(context: dict, risk_table: list[dict], rag: dict | None) -> str:
+    findings = []
+    for finding in risk_table:
+        findings.append(
+            {
+                "check_id": finding.get("check_id"),
+                "title": finding.get("title"),
+                "severity": finding.get("severity"),
+                "what_good_looks_like": finding.get("what_good_looks_like"),
+                "recommendation": finding.get("recommendation"),
+                "evidence_quotes": [
+                    {
+                        "quote": quote.get("quote"),
+                        "chunk_index": quote.get("chunk_index"),
+                        "start_char": quote.get("start_char"),
+                        "end_char": quote.get("end_char"),
+                    }
+                    for quote in (finding.get("evidence_quotes") or [])
+                ],
+            }
+        )
+    rag_block = []
+    if rag:
+        for entry in rag.get("top_chunks", []):
+            chunks = []
+            for chunk in entry.get("chunks", [])[:6]:
+                chunks.append(
+                    {
+                        "chunk_index": chunk.get("chunk_index"),
+                        "content": _truncate(chunk.get("content", ""), 600),
+                        "meta_json": chunk.get("meta_json"),
+                    }
+                )
+            rag_block.append({"query": entry.get("query"), "chunks": chunks})
+    payload = {
+        "context": context or {},
+        "rag": rag_block,
+        "risk_table": findings,
+    }
+    return (
+        "You are generating an executive summary and negotiation pack based only on the provided "
+        "risk table findings and evidence quotes. Do not create new evidence. Only include check_ids "
+        "present in the risk_table.\n\n"
+        f"INPUT JSON:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+
+def validate_llm_output(output: dict, allowed_check_ids: set[str]) -> dict:
+    exec_summary = output.get("exec_summary", "")
+    negotiation_pack = output.get("negotiation_pack", [])
+    if not isinstance(exec_summary, str):
+        exec_summary = ""
+    cleaned_pack = []
+    if isinstance(negotiation_pack, list):
+        for item in negotiation_pack:
+            if not isinstance(item, dict):
+                continue
+            check_id = item.get("check_id")
+            if check_id not in allowed_check_ids:
+                continue
+            cleaned_pack.append(
+                {
+                    "check_id": check_id,
+                    "ask": item.get("ask"),
+                    "fallback": item.get("fallback"),
+                    "rationale": item.get("rationale"),
+                }
+            )
+    return {"exec_summary": exec_summary, "negotiation_pack": cleaned_pack}
+
+
+def maybe_apply_llm(
+    review: Review, results: dict, context_json: dict | None
+) -> dict:
+    if not (llm_enabled and llm_provider == "openai" and openai_api_key):
+        return results
+    base_results = results if isinstance(results, dict) else {}
+    results_copy = dict(base_results)
+    risk_table = results_copy.get("risk_table") or []
+    if not risk_table:
+        return results_copy
+    allowed_check_ids = {finding.get("check_id") for finding in risk_table if finding.get("check_id")}
+    rag = results_copy.get("rag")
+    prompt = build_llm_prompt(context_json or {}, risk_table, rag)
+    schema = {
+        "name": "exec_and_negotiation",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "exec_summary": {"type": "string"},
+                "negotiation_pack": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "check_id": {"type": "string"},
+                            "ask": {"type": "string"},
+                            "fallback": {"type": "string"},
+                            "rationale": {"type": "string"},
+                        },
+                        "required": ["check_id", "ask", "fallback", "rationale"],
+                    },
+                },
+            },
+            "required": ["exec_summary", "negotiation_pack"],
+            "additionalProperties": False,
+        },
+    }
+    output = generate_structured_openai(prompt, schema)
+    validated = validate_llm_output(output or {}, allowed_check_ids)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    results_copy["llm"] = {
+        "model": openai_model,
+        "generated_at": generated_at,
+        "exec_summary": validated["exec_summary"],
+        "negotiation_pack": validated["negotiation_pack"],
+    }
+    if validated["exec_summary"]:
+        results_copy["exec_summary"] = validated["exec_summary"]
+    if validated["negotiation_pack"]:
+        results_copy["negotiation_pack"] = validated["negotiation_pack"]
+    return results_copy
 def retrieve_playbook_chunks(
     db: Session, playbook_id: uuid.UUID, query_text: str, k: int = 6
 ) -> list[PlaybookChunk]:
@@ -505,6 +662,7 @@ def process_review(review_id: str):
         }
         if rag_payload:
             review.results_json["rag"] = rag_payload
+        review.results_json = maybe_apply_llm(review, review.results_json, review.context_json)
         if doc_type["warnings"]:
             review.results_json["warnings"] = doc_type["warnings"]
         review.status = "completed"
@@ -598,3 +756,26 @@ def index_playbook(playbook_id: str):
         return {"status": "failed"}
     finally:
         db.close()
+
+
+@celery_app.task(name="rerun_llm")
+def rerun_llm(review_id: str):
+    db: Session = SessionLocal()
+    try:
+        try:
+            review_uuid = uuid.UUID(review_id)
+        except ValueError:
+            return {"status": "failed"}
+        review = db.scalar(select(Review).where(Review.id == review_uuid))
+        if not review or not review.results_json:
+            return {"status": "not_found"}
+        review.results_json = maybe_apply_llm(review, review.results_json, review.context_json)
+        db.add(review)
+        db.commit()
+        return {"status": "completed"}
+    finally:
+        db.close()
+from datetime import datetime, timezone
+llm_enabled = os.getenv("LLM_ENABLED", "false").lower() in {"1", "true", "yes"}
+llm_provider = os.getenv("LLM_PROVIDER", "openai").lower()
+openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")

@@ -53,7 +53,10 @@ services:
       DPA_S3_BUCKET: dpa-guard
       DPA_S3_REGION: us-east-1
       RAG_ENABLED: ${RAG_ENABLED:-false}
+      LLM_ENABLED: ${LLM_ENABLED:-false}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       OPENAI_EMBED_MODEL: ${OPENAI_EMBED_MODEL:-text-embedding-3-small}
     ports:
       - "8000:8000"
@@ -75,7 +78,10 @@ services:
       DPA_S3_BUCKET: dpa-guard
       DPA_S3_REGION: us-east-1
       RAG_ENABLED: ${RAG_ENABLED:-false}
+      LLM_ENABLED: ${LLM_ENABLED:-false}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       OPENAI_EMBED_MODEL: ${OPENAI_EMBED_MODEL:-text-embedding-3-small}
     volumes:
       - ./worker:/app

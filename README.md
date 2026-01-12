@@ -90,3 +90,9 @@ sleep 2
 curl -s "$API/playbook/versions" | python -m json.tool
 curl -s "$API/playbooks/$PB_ID/search?q=breach%20notification&k=3" | python -m json.tool
 ```
+
+## LLM summary (optional)
+Set `LLM_ENABLED=true` and `OPENAI_API_KEY`. Only evidence quotes and playbook chunks are sent.
+```bash
+curl -s -X POST "$API/reviews/$REVIEW_ID/rerun_llm" | python -m json.tool
+```

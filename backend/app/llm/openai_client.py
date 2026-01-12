@@ -1,7 +1,7 @@
+import json
 import time
 
-from openai import OpenAI
-from openai._exceptions import APIConnectionError, APIError, APITimeoutError, RateLimitError
+from openai import OpenAI, APIConnectionError, APIError, RateLimitError, APITimeoutError
 
 from app.llm.config import llm_settings
 
@@ -44,12 +44,23 @@ def generate_structured(prompt: str, json_schema: dict) -> dict:
     client = _get_client()
 
     def _call():
-        response = client.responses.create(
+        response = client.chat.completions.create(
             model=llm_settings.openai_model,
-            input=prompt,
+            messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_schema", "json_schema": json_schema},
             timeout=30,
         )
-        return response.output_parsed
+        content = response.choices[0].message.content or ""
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            start = content.find("{")
+            end = content.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                try:
+                    return json.loads(content[start : end + 1])
+                except json.JSONDecodeError:
+                    pass
+            raise RuntimeError("LLM returned invalid JSON")
 
     return _retry(_call)

@@ -116,6 +116,7 @@ def get_review(review_id: uuid.UUID, db: Session = Depends(get_db)):
         "id": str(review.id),
         "status": review.status,
         "playbook_id": str(review.playbook_id) if review.playbook_id else None,
+        "llm_generated": bool(review.results_json and review.results_json.get("llm")),
         "source_filename": review.source_filename,
         "source_object_key": review.source_object_key,
         "source_mime": review.source_mime,
@@ -145,6 +146,17 @@ def get_rag(review_id: uuid.UUID, db: Session = Depends(get_db)):
     if not review.results_json or "rag" not in review.results_json:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="RAG not ready")
     return review.results_json.get("rag")
+
+
+@router.post("/reviews/{review_id}/rerun_llm")
+def rerun_llm(review_id: uuid.UUID, db: Session = Depends(get_db)):
+    review = db.scalar(select(Review).where(Review.id == review_id))
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    if not review.results_json:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Results not ready")
+    celery_app.send_task("rerun_llm", args=[str(review_id)])
+    return {"id": str(review.id), "status": "queued"}
 
 
 @router.get("/reviews/{review_id}/text")
