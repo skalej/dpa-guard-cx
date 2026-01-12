@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     s3_access_key: str = "minio"
     s3_secret_key: str = "minio123"
     s3_bucket: str = "dpa-guard"
+    s3_region: str = "us-east-1"
 
 
 settings = Settings()

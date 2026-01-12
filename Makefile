@@ -19,4 +19,4 @@ web:
 	cd frontend && npm run dev
 
 db-migrate:
-	cd backend && alembic upgrade head
+	cd backend && PYTHONPATH=. alembic upgrade head

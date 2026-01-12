@@ -42,9 +42,20 @@ This repository contains the initial scaffold for the DPA Guard MVP. It wires th
   ```
 
 ## Notes
-- Review endpoints are stubs and return HTTP 501.
+- Reviews flow stores metadata, uploads to MinIO, and writes placeholder results.
 - Do not log raw contract text; log only IDs/status/metadata.
 
 ## Common commands
 - `make up` / `make down`
 - `make db-migrate`
+
+## Smoke test (reviews flow)
+```bash
+API=http://localhost:8000
+REVIEW_ID=$(curl -s -X POST "$API/reviews" -H "Content-Type: application/json" -d '{"context": {"project":"demo"}, "vendor_name":"Acme"}' | python -c 'import json,sys; print(json.load(sys.stdin)[\"id\"])')
+
+curl -s -X POST "$API/reviews/$REVIEW_ID/upload" \\\n  -F "file=@/path/to/contract.pdf" \\\n  | python -m json.tool
+
+curl -s -X POST "$API/reviews/$REVIEW_ID/start" | python -m json.tool
+
+# Poll until completed\ncurl -s "$API/reviews/$REVIEW_ID" | python -m json.tool\ncurl -s "$API/reviews/$REVIEW_ID/results" | python -m json.tool\n```

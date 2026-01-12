@@ -50,6 +50,7 @@ services:
       DPA_S3_ACCESS_KEY: minio
       DPA_S3_SECRET_KEY: minio123
       DPA_S3_BUCKET: dpa-guard
+      DPA_S3_REGION: us-east-1
     ports:
       - "8000:8000"
     volumes:
@@ -63,6 +64,12 @@ services:
       - redis
     environment:
       DPA_REDIS_URL: redis://redis:6379/0
+      DPA_DATABASE_URL: postgresql+psycopg2://dpa:dpa@postgres:5432/dpa
+      DPA_S3_ENDPOINT: http://minio:9000
+      DPA_S3_ACCESS_KEY: minio
+      DPA_S3_SECRET_KEY: minio123
+      DPA_S3_BUCKET: dpa-guard
+      DPA_S3_REGION: us-east-1
     volumes:
       - ./worker:/app
 
