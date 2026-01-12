@@ -155,4 +155,6 @@ def export_pdf(review_id: uuid.UUID):
 
 @router.get("/playbook/versions")
 def playbook_versions():
-    raise HTTPException(status_code=501, detail="Not implemented in MVP scaffold")
+    from app.playbooks.loader import list_playbooks
+
+    return {"playbooks": list_playbooks()}

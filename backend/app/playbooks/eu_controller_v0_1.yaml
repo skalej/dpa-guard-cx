@@ -1,0 +1,86 @@
+id: eu_controller
+version: 0.1
+title: EU Controller DPA Baseline
+checks:
+  - check_id: breach_notification_timeline
+    title: Breach Notification Timeline
+    severity: high
+    patterns:
+      - "notify[^\\n]{0,80}personal data breach"
+      - "without undue delay"
+      - "within\\s+72\\s+hours"
+      - "no later than\\s+\\d+\\s+hours"
+    what_good_looks_like: "Processor notifies controller without undue delay and, where feasible, within 72 hours."
+    recommendation: "Add explicit breach notification timing (e.g., 72 hours) and prompt notice." 
+  - check_id: subprocessor_authorization
+    title: Subprocessor Authorization
+    severity: high
+    patterns:
+      - "engage[^\\n]{0,80}sub-?processor"
+      - "prior written consent"
+      - "general written authorization"
+      - "right to object"
+      - "list of sub-?processors"
+      - "notify[^\\n]{0,80}sub-?processor"
+    what_good_looks_like: "Controller grants prior written consent or general authorization with objection rights." 
+    recommendation: "Require prior written consent or general authorization with objection process." 
+  - check_id: audit_rights
+    title: Audit and Inspection Rights
+    severity: medium
+    patterns:
+      - "audit[^\\n]{0,80}rights"
+      - "right to audit"
+      - "inspection[^\\n]{0,80}rights"
+      - "third-?party auditor"
+      - "once per\\s+year"
+    what_good_looks_like: "Controller has reasonable audit/inspection rights, possibly via third-party auditor with notice." 
+    recommendation: "Include audit/inspection rights and reasonable limits (notice/frequency)." 
+  - check_id: deletion_or_return
+    title: Return or Deletion Upon Termination
+    severity: medium
+    patterns:
+      - "return[^\\n]{0,80}personal data"
+      - "delete[^\\n]{0,80}personal data"
+      - "upon termination"
+      - "end of (the )?services"
+    what_good_looks_like: "Processor returns or deletes personal data at end of services within a defined timeframe." 
+    recommendation: "Specify return/deletion obligation and timeframe after termination." 
+  - check_id: assistance_with_dsar_and_security
+    title: Assistance with Data Subject Rights and Security
+    severity: medium
+    patterns:
+      - "assist[^\\n]{0,80}data subject"
+      - "assistance[^\\n]{0,80}data subject"
+      - "security measures"
+      - "technical and organizational"
+    what_good_looks_like: "Processor assists with data subject rights and implements appropriate security measures." 
+    recommendation: "Add assistance for DSARs and reference appropriate security measures." 
+  - check_id: international_transfers
+    title: International Transfers
+    severity: high
+    patterns:
+      - "standard contractual clauses"
+      - "\\bSCCs?\\b"
+      - "Chapter\\s+V"
+      - "transfer mechanism"
+    what_good_looks_like: "Transfers rely on GDPR Chapter V mechanisms such as SCCs." 
+    recommendation: "Specify transfer mechanism (e.g., SCCs) for cross-border transfers." 
+  - check_id: confidentiality_of_personnel
+    title: Confidentiality of Personnel
+    severity: low
+    patterns:
+      - "personnel[^\\n]{0,80}confidentiality"
+      - "authorized[^\\n]{0,80}confidentiality"
+      - "duty of confidentiality"
+    what_good_looks_like: "Personnel authorized to process data are bound by confidentiality obligations." 
+    recommendation: "Ensure confidentiality obligations for personnel with access." 
+  - check_id: purpose_limitation_and_instructions
+    title: Purpose Limitation and Documented Instructions
+    severity: high
+    patterns:
+      - "only on documented instructions"
+      - "documented instructions"
+      - "process[^\\n]{0,80}only on"
+      - "processing instructions"
+    what_good_looks_like: "Processor processes data only on documented instructions from the controller." 
+    recommendation: "Clarify processing limited to documented controller instructions." 

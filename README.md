@@ -66,4 +66,9 @@ curl -s "$API/reviews/$REVIEW_ID/results" | python -m json.tool
 
 # Extraction metadata
 curl -s "$API/reviews/$REVIEW_ID/text" | python -m json.tool
+
+# Results include evidence quotes with spans
+curl -s "$API/reviews/$REVIEW_ID/results" | python -m json.tool
 ```
+
+Note: For meaningful playbook results, upload a real DPA/contract PDF (not PRD/TDD docs).
