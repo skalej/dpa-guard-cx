@@ -535,6 +535,68 @@ def _split_playbook_sections(text: str, chunk_size: int = 1800, overlap: int = 2
     return chunks
 
 
+def _tokenize_title(title: str | None) -> list[str]:
+    if not title:
+        return []
+    return [token for token in re.split(r"[^a-zA-Z0-9]+", title.lower()) if len(token) >= 4]
+
+
+def _get_chunk_heading(chunk) -> str | None:
+    meta = None
+    if isinstance(chunk, dict):
+        meta = chunk.get("meta_json")
+    else:
+        meta = getattr(chunk, "meta_json", None)
+    if isinstance(meta, dict):
+        heading = meta.get("heading")
+        if isinstance(heading, str) and heading.strip():
+            return heading
+    return None
+
+
+def _score_chunk_for_finding(finding: dict, heading: str | None) -> int:
+    if not heading:
+        return 0
+    heading_lower = heading.lower()
+    score = 0
+    title_tokens = _tokenize_title(finding.get("title"))
+    if any(token in heading_lower for token in title_tokens):
+        score += 3
+    check_id = finding.get("check_id") or ""
+    prefix_map = {
+        "breach_notification_timeline": ["BR"],
+        "subprocessor_authorization": ["SUB"],
+        "international_transfers": ["TR", "TRANSFER"],
+        "audit_rights": ["AUDIT"],
+        "deletion_or_return": ["DEL"],
+        "confidentiality_of_personnel": ["CONF"],
+        "purpose_limitation_and_instructions": ["INSTR", "PURPOSE"],
+    }
+    for prefix in prefix_map.get(check_id, []):
+        if prefix.lower() in heading_lower:
+            score += 2
+            break
+    return score
+
+
+def select_rag_chunks_for_finding(chunks: list, finding: dict, max_chunks: int = 2) -> list:
+    scored = []
+    for idx, chunk in enumerate(chunks):
+        heading = _get_chunk_heading(chunk)
+        score = _score_chunk_for_finding(finding, heading)
+        scored.append((score, idx, chunk))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    if not scored:
+        return []
+    best_score, _, best_chunk = scored[0]
+    selected = [best_chunk]
+    if max_chunks > 1 and len(scored) > 1:
+        second_score, _, second_chunk = scored[1]
+        if second_score > 0 and second_score == best_score:
+            selected.append(second_chunk)
+    return selected
+
+
 def load_playbook(playbook_id: str = "eu_controller") -> dict:
     for path in PLAYBOOK_DIR.glob("*.yaml"):
         data = yaml.safe_load(path.read_text())
@@ -754,11 +816,12 @@ def process_review(review_id: str):
             for finding in findings:
                 query = f"{finding.get('check_id')} {finding.get('title')} {finding.get('recommendation') or ''}"
                 chunks_found = retrieve_playbook_chunks(
-                    db, uuid.UUID(per_finding_rag["playbook_id"]), query, k=2
+                    db, uuid.UUID(per_finding_rag["playbook_id"]), query, k=6
                 )
+                selected_chunks = select_rag_chunks_for_finding(chunks_found, finding, max_chunks=2)
                 rag_chunks = []
                 total_chars = 0
-                for chunk in chunks_found:
+                for chunk in selected_chunks:
                     content = _truncate(chunk.content or "", 600)
                     if not content:
                         continue
