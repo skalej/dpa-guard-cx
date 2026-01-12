@@ -185,7 +185,7 @@ def embed_texts_openai(texts: list[str]) -> list[list[float]]:
     return _retry(_call)
 
 
-def generate_structured_openai(prompt: str, json_schema: dict) -> dict:
+def generate_structured_openai(prompt: str, json_schema: dict) -> tuple[str, dict | None]:
     if not llm_enabled or llm_provider != "openai":
         raise RuntimeError("LLM is disabled")
     if not openai_api_key:
@@ -200,17 +200,18 @@ def generate_structured_openai(prompt: str, json_schema: dict) -> dict:
             timeout=30,
         )
         content = response.choices[0].message.content or ""
+        parsed = None
         try:
-            return json.loads(content)
+            parsed = json.loads(content)
         except json.JSONDecodeError:
             start = content.find("{")
             end = content.rfind("}")
             if start != -1 and end != -1 and end > start:
                 try:
-                    return json.loads(content[start : end + 1])
+                    parsed = json.loads(content[start : end + 1])
                 except json.JSONDecodeError:
-                    pass
-            raise RuntimeError("LLM returned invalid JSON")
+                    parsed = None
+        return content, parsed
 
     return _retry(_call)
 
@@ -268,27 +269,81 @@ def build_llm_prompt(context: dict, risk_table: list[dict], rag: dict | None) ->
     )
 
 
-def validate_llm_output(output: dict, allowed_check_ids: set[str]) -> dict:
+def _trim_text(value: str | None, limit: int) -> str:
+    if not value:
+        return ""
+    if len(value) <= limit:
+        return value
+    return value[:limit]
+
+
+def build_deterministic_pack(findings: list[dict]) -> list[dict]:
+    pack = []
+    for finding in findings:
+        template = get_template(finding.get("check_id", ""))
+        pack.append(
+            {
+                "check_id": finding.get("check_id"),
+                "title": finding.get("title"),
+                "severity": finding.get("severity"),
+                "ask": template.get("ask"),
+                "fallback": template.get("fallback"),
+                "rationale": template.get("rationale"),
+            }
+        )
+    return pack
+
+
+def clean_llm_output(
+    output: dict,
+    allowed_check_ids: set[str],
+    deterministic_exec_summary: str,
+    deterministic_pack: list[dict],
+    max_len: int = 400,
+) -> dict:
     exec_summary = output.get("exec_summary", "")
-    negotiation_pack = output.get("negotiation_pack", [])
-    if not isinstance(exec_summary, str):
-        exec_summary = ""
+    if not isinstance(exec_summary, str) or not exec_summary.strip():
+        exec_summary = deterministic_exec_summary
+    pack_from_llm = output.get("negotiation_pack", [])
+    deterministic_map = {item.get("check_id"): item for item in deterministic_pack}
     cleaned_pack = []
-    if isinstance(negotiation_pack, list):
-        for item in negotiation_pack:
+    seen = set()
+
+    if isinstance(pack_from_llm, list):
+        for item in pack_from_llm:
             if not isinstance(item, dict):
                 continue
             check_id = item.get("check_id")
-            if check_id not in allowed_check_ids:
+            if check_id not in allowed_check_ids or check_id in seen:
                 continue
+            base = deterministic_map.get(check_id, {})
             cleaned_pack.append(
                 {
                     "check_id": check_id,
-                    "ask": item.get("ask"),
-                    "fallback": item.get("fallback"),
-                    "rationale": item.get("rationale"),
+                    "title": base.get("title"),
+                    "severity": base.get("severity"),
+                    "ask": _trim_text(item.get("ask") or base.get("ask"), max_len),
+                    "fallback": _trim_text(item.get("fallback") or base.get("fallback"), max_len),
+                    "rationale": _trim_text(item.get("rationale") or base.get("rationale"), max_len),
                 }
             )
+            seen.add(check_id)
+
+    for item in deterministic_pack:
+        check_id = item.get("check_id")
+        if check_id in allowed_check_ids and check_id not in seen:
+            cleaned_pack.append(
+                {
+                    "check_id": check_id,
+                    "title": item.get("title"),
+                    "severity": item.get("severity"),
+                    "ask": _trim_text(item.get("ask"), max_len),
+                    "fallback": _trim_text(item.get("fallback"), max_len),
+                    "rationale": _trim_text(item.get("rationale"), max_len),
+                }
+            )
+            seen.add(check_id)
+
     return {"exec_summary": exec_summary, "negotiation_pack": cleaned_pack}
 
 
@@ -329,19 +384,30 @@ def maybe_apply_llm(
             "additionalProperties": False,
         },
     }
-    output = generate_structured_openai(prompt, schema)
-    validated = validate_llm_output(output or {}, allowed_check_ids)
+    deterministic_exec_summary = summarize_findings(risk_table)
+    deterministic_pack = build_deterministic_pack(risk_table)
+    try:
+        raw_text, parsed = generate_structured_openai(prompt, schema)
+    except Exception:  # noqa: BLE001
+        results_copy["exec_summary"] = deterministic_exec_summary
+        results_copy["negotiation_pack"] = deterministic_pack
+        return results_copy
+    if not isinstance(parsed, dict):
+        cleaned = {
+            "exec_summary": deterministic_exec_summary,
+            "negotiation_pack": deterministic_pack,
+        }
+    else:
+        cleaned = clean_llm_output(parsed, allowed_check_ids, deterministic_exec_summary, deterministic_pack)
     generated_at = datetime.now(timezone.utc).isoformat()
     results_copy["llm"] = {
         "model": openai_model,
         "generated_at": generated_at,
-        "exec_summary": validated["exec_summary"],
-        "negotiation_pack": validated["negotiation_pack"],
+        "raw": raw_text,
+        "cleaned": cleaned,
     }
-    if validated["exec_summary"]:
-        results_copy["exec_summary"] = validated["exec_summary"]
-    if validated["negotiation_pack"]:
-        results_copy["negotiation_pack"] = validated["negotiation_pack"]
+    results_copy["exec_summary"] = cleaned["exec_summary"]
+    results_copy["negotiation_pack"] = cleaned["negotiation_pack"]
     return results_copy
 def retrieve_playbook_chunks(
     db: Session, playbook_id: uuid.UUID, query_text: str, k: int = 6
@@ -630,19 +696,7 @@ def process_review(review_id: str):
                     "top_chunks": top_chunks,
                 }
 
-        negotiation_pack = []
-        for finding in findings:
-            template = get_template(finding.get("check_id", ""))
-            negotiation_pack.append(
-                {
-                    "check_id": finding.get("check_id"),
-                    "title": finding.get("title"),
-                    "severity": finding.get("severity"),
-                    "ask": template.get("ask"),
-                    "fallback": template.get("fallback"),
-                    "rationale": template.get("rationale"),
-                }
-            )
+        negotiation_pack = build_deterministic_pack(findings)
 
         review.results_json = {
             "playbook": {
