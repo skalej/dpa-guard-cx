@@ -14,6 +14,8 @@ class Review(Base):
     status = Column(String(32), nullable=False, default="draft")
     context_json = Column(JSONB, nullable=True)
     results_json = Column(JSONB, nullable=True)
+    extracted_text = Column(Text, nullable=True)
+    extracted_meta = Column(JSONB, nullable=True)
     source_object_key = Column(Text, nullable=True)
     source_filename = Column(Text, nullable=True)
     source_mime = Column(Text, nullable=True)

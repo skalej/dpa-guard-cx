@@ -1,7 +1,10 @@
+import io
 import os
 import uuid
 
 import boto3
+from docx import Document
+from pypdf import PdfReader
 from celery import Celery
 from sqlalchemy import Column, DateTime, String, Text, create_engine, func, select
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -30,6 +33,8 @@ class Review(Base):
     status = Column(String(32), nullable=False, default="draft")
     context_json = Column(JSONB, nullable=True)
     results_json = Column(JSONB, nullable=True)
+    extracted_text = Column(Text, nullable=True)
+    extracted_meta = Column(JSONB, nullable=True)
     source_object_key = Column(Text, nullable=True)
     source_filename = Column(Text, nullable=True)
     source_mime = Column(Text, nullable=True)
@@ -51,6 +56,39 @@ def get_s3_client():
         aws_secret_access_key=s3_secret_key,
         region_name=s3_region,
     )
+
+
+def normalize_text(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines()]
+    collapsed = []
+    blank_streak = 0
+    for line in lines:
+        if line:
+            if blank_streak:
+                collapsed.append("")
+                blank_streak = 0
+            collapsed.append(" ".join(line.split()))
+        else:
+            blank_streak += 1
+    return "\n".join(collapsed).strip()
+
+
+def chunk_text(
+    text: str, chunk_size: int = 2000, overlap: int = 200
+) -> list[dict[str, int]]:
+    chunks: list[dict[str, int]] = []
+    if not text:
+        return chunks
+    step = max(chunk_size - overlap, 1)
+    start = 0
+    index = 0
+    length = len(text)
+    while start < length:
+        end = min(start + chunk_size, length)
+        chunks.append({"index": index, "start_char": start, "end_char": end})
+        index += 1
+        start += step
+    return chunks
 
 
 @celery_app.task(name="process_review")
@@ -79,9 +117,51 @@ def process_review(review_id: str):
         if not size or size <= 0:
             raise ValueError("Source file empty")
 
+        obj = s3.get_object(Bucket=s3_bucket, Key=review.source_object_key)
+        data = obj["Body"].read()
+        if not data:
+            raise ValueError("Source file empty")
+
+        extracted_text = ""
+        pages = None
+        if review.source_mime == "application/pdf":
+            reader = PdfReader(io.BytesIO(data))
+            pages = len(reader.pages)
+            extracted_text = "\n\n".join((page.extract_text() or "") for page in reader.pages)
+        elif review.source_mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            doc = Document(io.BytesIO(data))
+            extracted_text = "\n\n".join(p.text for p in doc.paragraphs)
+        else:
+            raise ValueError("Unsupported source type")
+
+        normalized = normalize_text(extracted_text)
+        if review.source_mime == "application/pdf" and len(normalized) < 500:
+            review.status = "failed"
+            review.error_message = (
+                "PDF appears scanned or contains insufficient text; OCR not supported in MVP."
+            )
+            review.extracted_text = normalized
+            review.extracted_meta = {"chars": len(normalized), "pages": pages, "chunks": []}
+            db.add(review)
+            db.commit()
+            return {"status": "failed"}
+
+        chunks = chunk_text(normalized)
+        review.extracted_text = normalized
+        review.extracted_meta = {
+            "chars": len(normalized),
+            "pages": pages,
+            "chunks": chunks,
+        }
+
         review.results_json = {
             "exec_summary": "Placeholder summary. Analysis not implemented.",
             "risk_table": [],
+            "extraction": {
+                "chars": len(normalized),
+                "pages": pages,
+                "chunks": len(chunks),
+            },
         }
         review.status = "completed"
         review.error_message = None

@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -125,6 +125,27 @@ def get_results(review_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Results not ready")
 
     return review.results_json
+
+
+@router.get("/reviews/{review_id}/text")
+def get_extracted_text(
+    review_id: uuid.UUID,
+    response: Response,
+    include_text: bool = False,
+    db: Session = Depends(get_db),
+):
+    # TODO: protect this endpoint (internal/dev only).
+    review = db.scalar(select(Review).where(Review.id == review_id))
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
+
+    payload: dict[str, Any] = {"extracted_meta": review.extracted_meta}
+    if include_text:
+        payload["extracted_text"] = review.extracted_text
+    return payload
 
 
 @router.get("/reviews/{review_id}/export/pdf")

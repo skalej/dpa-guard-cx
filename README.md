@@ -54,8 +54,16 @@ This repository contains the initial scaffold for the DPA Guard MVP. It wires th
 API=http://localhost:8000
 REVIEW_ID=$(curl -s -X POST "$API/reviews" -H "Content-Type: application/json" -d '{"context": {"project":"demo"}, "vendor_name":"Acme"}' | python -c 'import json,sys; print(json.load(sys.stdin)[\"id\"])')
 
-curl -s -X POST "$API/reviews/$REVIEW_ID/upload" \\\n  -F "file=@/path/to/contract.pdf" \\\n  | python -m json.tool
+curl -s -X POST "$API/reviews/$REVIEW_ID/upload" \\
+  -F "file=@/path/to/contract.pdf" \\
+  | python -m json.tool
 
 curl -s -X POST "$API/reviews/$REVIEW_ID/start" | python -m json.tool
 
-# Poll until completed\ncurl -s "$API/reviews/$REVIEW_ID" | python -m json.tool\ncurl -s "$API/reviews/$REVIEW_ID/results" | python -m json.tool\n```
+# Poll until completed
+curl -s "$API/reviews/$REVIEW_ID" | python -m json.tool
+curl -s "$API/reviews/$REVIEW_ID/results" | python -m json.tool
+
+# Extraction metadata
+curl -s "$API/reviews/$REVIEW_ID/text" | python -m json.tool
+```
