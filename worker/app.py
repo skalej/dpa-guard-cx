@@ -15,7 +15,7 @@ import yaml
 
 from negotiation_templates import get_template
 from celery import Celery
-from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine, func, select
+from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine, delete, func, select
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
@@ -484,6 +484,61 @@ def validate_quote(extracted_text: str, quote: str, start: int, end: int) -> tup
     return None
 
 
+SECTION_HEADING_RE = re.compile(r"^(?P<heading>[A-Z]{2,10}-[A-Z]{2,10}-\d{2}\b.*)$", re.MULTILINE)
+
+
+def _split_playbook_sections(text: str, chunk_size: int = 1800, overlap: int = 200) -> list[dict]:
+    matches = list(SECTION_HEADING_RE.finditer(text))
+    if not matches:
+        return []
+    sections = []
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        heading = match.group("heading").strip()
+        sections.append({"heading": heading, "start": start, "end": end})
+
+    chunks = []
+    chunk_index = 0
+    for section in sections:
+        section_text = text[section["start"] : section["end"]]
+        if len(section_text) <= chunk_size + overlap:
+            chunks.append(
+                {
+                    "chunk_index": chunk_index,
+                    "content": section_text,
+                    "meta_json": {
+                        "heading": section["heading"],
+                        "start_char": section["start"],
+                        "end_char": section["end"],
+                    },
+                }
+            )
+            chunk_index += 1
+            continue
+
+        sub_ranges = chunk_text(section_text, chunk_size=chunk_size, overlap=overlap)
+        for sub in sub_ranges:
+            sub_start = section["start"] + sub["start_char"]
+            sub_end = section["start"] + sub["end_char"]
+            content = section_text[sub["start_char"] : sub["end_char"]]
+            if sub["start_char"] != 0:
+                content = f"{section['heading']}\n{content}"
+            chunks.append(
+                {
+                    "chunk_index": chunk_index,
+                    "content": content,
+                    "meta_json": {
+                        "heading": section["heading"],
+                        "start_char": sub_start,
+                        "end_char": sub_end,
+                    },
+                }
+            )
+            chunk_index += 1
+    return chunks
+
+
 def load_playbook(playbook_id: str = "eu_controller") -> dict:
     for path in PLAYBOOK_DIR.glob("*.yaml"):
         data = yaml.safe_load(path.read_text())
@@ -772,16 +827,20 @@ def index_playbook(playbook_id: str):
             chunks = structured_chunks
         else:
             text = normalize_text(_extract_playbook_text(playbook.source_filename or "", data))
-            chunk_ranges = chunk_text(text, chunk_size=1200, overlap=150)
-            for chunk in chunk_ranges:
-                content = text[chunk["start_char"] : chunk["end_char"]]
-                chunks.append(
-                    {
-                        "chunk_index": chunk["index"],
-                        "content": content,
-                        "meta_json": {"start_char": chunk["start_char"], "end_char": chunk["end_char"]},
-                    }
-                )
+            sections = _split_playbook_sections(text)
+            if sections:
+                chunks = sections
+            else:
+                chunk_ranges = chunk_text(text, chunk_size=1200, overlap=150)
+                for chunk in chunk_ranges:
+                    content = text[chunk["start_char"] : chunk["end_char"]]
+                    chunks.append(
+                        {
+                            "chunk_index": chunk["index"],
+                            "content": content,
+                            "meta_json": {"start_char": chunk["start_char"], "end_char": chunk["end_char"]},
+                        }
+                    )
 
         embeddings = embed_texts_openai([chunk["content"] for chunk in chunks])
         for chunk, embedding in zip(chunks, embeddings, strict=False):
@@ -810,6 +869,21 @@ def index_playbook(playbook_id: str):
         return {"status": "failed"}
     finally:
         db.close()
+
+
+@celery_app.task(name="reindex_playbook")
+def reindex_playbook(playbook_id: str):
+    db: Session = SessionLocal()
+    try:
+        try:
+            playbook_uuid = uuid.UUID(playbook_id)
+        except ValueError:
+            return {"status": "failed"}
+        db.execute(delete(PlaybookChunk).where(PlaybookChunk.playbook_id == playbook_uuid))
+        db.commit()
+    finally:
+        db.close()
+    return index_playbook(playbook_id)
 
 
 @celery_app.task(name="rerun_llm")

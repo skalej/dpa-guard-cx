@@ -72,6 +72,7 @@ curl -s "$API/reviews/$REVIEW_ID/results" | python -m json.tool
 ```
 
 Note: For meaningful playbook results, upload a real DPA/contract PDF (not PRD/TDD docs).
+For best playbook retrieval from PDF/text, structure sections with headings like `DPA-BR-01 – Breach Notification`.
 
 PDF export:
 ```bash
@@ -89,6 +90,8 @@ PB_ID=$(curl -s -X POST "$API/playbooks/upload" -F "file=@backend/app/playbooks/
 sleep 2
 curl -s "$API/playbook/versions" | python -m json.tool
 curl -s "$API/playbooks/$PB_ID/search?q=breach%20notification&k=3" | python -m json.tool
+# Reindex if you update a playbook or want to apply section-aware chunking
+curl -s -X POST "$API/playbooks/$PB_ID/reindex" | python -m json.tool
 ```
 
 ## LLM summary (optional)

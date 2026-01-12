@@ -113,3 +113,12 @@ def search_playbook(
             for chunk in chunks
         ],
     }
+
+
+@router.post("/playbooks/{playbook_id}/reindex")
+def reindex_playbook(playbook_id: uuid.UUID, db: Session = Depends(get_db)):
+    playbook = db.scalar(select(Playbook).where(Playbook.id == playbook_id))
+    if not playbook:
+        raise HTTPException(status_code=404, detail="Playbook not found")
+    celery_app.send_task("reindex_playbook", args=[str(playbook_id)])
+    return {"id": str(playbook_id), "status": "queued"}
