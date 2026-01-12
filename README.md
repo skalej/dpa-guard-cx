@@ -72,3 +72,11 @@ curl -s "$API/reviews/$REVIEW_ID/results" | python -m json.tool
 ```
 
 Note: For meaningful playbook results, upload a real DPA/contract PDF (not PRD/TDD docs).
+
+PDF export:
+```bash
+curl -s "$API/reviews/$REVIEW_ID/export/pdf" | python -m json.tool
+# If no URL returned, open MinIO console at http://localhost:9001 and download from bucket dpa-guard.
+```
+
+Set `S3_PUBLIC_ENDPOINT` (e.g., `http://127.0.0.1:9000`) so presigned URLs are browser-accessible from the host. Use `S3_INTERNAL_ENDPOINT` for in-network access (e.g., `http://minio:9000`).

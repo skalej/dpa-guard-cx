@@ -8,6 +8,8 @@ import boto3
 from docx import Document
 from pypdf import PdfReader
 import yaml
+
+from negotiation_templates import get_template
 from celery import Celery
 from sqlalchemy import Column, DateTime, String, Text, create_engine, func, select
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -298,6 +300,20 @@ def process_review(review_id: str):
         if doc_type["warnings"]:
             exec_summary = f"{doc_type['warnings'][0]} {exec_summary}"
 
+        negotiation_pack = []
+        for finding in findings:
+            template = get_template(finding.get("check_id", ""))
+            negotiation_pack.append(
+                {
+                    "check_id": finding.get("check_id"),
+                    "title": finding.get("title"),
+                    "severity": finding.get("severity"),
+                    "ask": template.get("ask"),
+                    "fallback": template.get("fallback"),
+                    "rationale": template.get("rationale"),
+                }
+            )
+
         review.results_json = {
             "playbook": {
                 "id": playbook.get("id"),
@@ -306,6 +322,7 @@ def process_review(review_id: str):
             },
             "exec_summary": exec_summary,
             "risk_table": findings,
+            "negotiation_pack": negotiation_pack,
             "extraction": {
                 "chars": len(normalized),
                 "pages": pages,

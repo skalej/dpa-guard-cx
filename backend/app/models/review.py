@@ -16,6 +16,8 @@ class Review(Base):
     results_json = Column(JSONB, nullable=True)
     extracted_text = Column(Text, nullable=True)
     extracted_meta = Column(JSONB, nullable=True)
+    export_object_key = Column(Text, nullable=True)
+    export_created_at = Column(DateTime(timezone=True), nullable=True)
     source_object_key = Column(Text, nullable=True)
     source_filename = Column(Text, nullable=True)
     source_mime = Column(Text, nullable=True)
