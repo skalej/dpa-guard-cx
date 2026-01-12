@@ -1,6 +1,9 @@
 import unittest
 
-from app import validate_quote
+from _test_utils import load_worker_app
+
+app = load_worker_app()
+validate_quote = app.validate_quote
 
 
 class QuoteValidatorTests(unittest.TestCase):

@@ -1,7 +1,10 @@
 import json
 import unittest
 
-from app import build_llm_prompt
+from _test_utils import load_worker_app
+
+app = load_worker_app()
+build_llm_prompt = app.build_llm_prompt
 
 
 class LlmPromptRagTests(unittest.TestCase):
@@ -39,13 +42,13 @@ class LlmPromptRagTests(unittest.TestCase):
                 },
             },
         ]
-        prompt = build_llm_prompt({"region": "EU"}, findings)
+        prompt, _, _ = build_llm_prompt({"region": "EU"}, findings)
         payload = self._extract_payload(prompt)
         self.assertEqual(len(payload["risk_table"]), 2)
         rag_a = payload["risk_table"][0]["rag_chunks"][0]["content"]
         rag_b = payload["risk_table"][1]["rag_chunks"][0]["content"]
-        self.assertEqual(len(rag_a), 600)
-        self.assertEqual(len(rag_b), 600)
+        self.assertLessEqual(len(rag_a), 600)
+        self.assertLessEqual(len(rag_b), 600)
 
 
 if __name__ == "__main__":

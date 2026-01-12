@@ -14,6 +14,15 @@ class LLMSettings(BaseSettings):
     openai_embed_model: str = Field(
         default="text-embedding-3-small", validation_alias="OPENAI_EMBED_MODEL"
     )
+    openai_embed_max_texts_per_call: int = Field(
+        default=64, validation_alias="OPENAI_EMBED_MAX_TEXTS_PER_CALL"
+    )
+    openai_embed_max_chars_per_text: int = Field(
+        default=2000, validation_alias="OPENAI_EMBED_MAX_CHARS_PER_TEXT"
+    )
+    openai_response_max_output_tokens: int = Field(
+        default=600, validation_alias="OPENAI_RESPONSE_MAX_OUTPUT_TOKENS"
+    )
 
 
 llm_settings = LLMSettings()

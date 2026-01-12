@@ -1,6 +1,9 @@
 import unittest
 
-from app import select_rag_chunks_for_finding
+from _test_utils import load_worker_app
+
+app = load_worker_app()
+select_rag_chunks_for_finding = app.select_rag_chunks_for_finding
 
 
 class RagSelectionTests(unittest.TestCase):

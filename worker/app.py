@@ -1,6 +1,8 @@
+import hashlib
 import io
 import json
 import os
+import random
 import re
 import time
 import uuid
@@ -17,6 +19,7 @@ from negotiation_templates import get_template
 from celery import Celery
 from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine, delete, func, select
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 redis_url = os.getenv("DPA_REDIS_URL", "redis://localhost:6379/0")
@@ -29,6 +32,8 @@ s3_region = os.getenv("DPA_S3_REGION", "us-east-1")
 rag_enabled = os.getenv("RAG_ENABLED", "false").lower() in {"1", "true", "yes"}
 openai_api_key = os.getenv("OPENAI_API_KEY")
 openai_embed_model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+openai_embed_max_texts_per_call = int(os.getenv("OPENAI_EMBED_MAX_TEXTS_PER_CALL", "64"))
+openai_embed_max_chars_per_text = int(os.getenv("OPENAI_EMBED_MAX_CHARS_PER_TEXT", "2000"))
 
 celery_app = Celery("dpa_guard", broker=redis_url, backend=redis_url)
 
@@ -114,6 +119,17 @@ class PlaybookChunk(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class EmbeddingCache(Base):
+    __tablename__ = "embedding_cache"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    model = Column(Text, nullable=False)
+    sha256 = Column(Text, nullable=False, unique=True, index=True)
+    dims = Column(Integer, nullable=False)
+    embedding = Column(Vector(1536), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 def get_s3_client():
     return boto3.client(
         "s3",
@@ -157,32 +173,89 @@ def chunk_text(
     return chunks
 
 
-def _retry(func, attempts: int = 2):
+def _retry(func, attempts: int = 3, base_sleep: float = 0.5):
     for attempt in range(attempts):
         try:
             return func()
         except (APIConnectionError, APIError, RateLimitError, APITimeoutError):
             if attempt + 1 >= attempts:
                 raise
-            time.sleep(0.5)
+            sleep = base_sleep * (2**attempt)
+            time.sleep(sleep + random.uniform(0, 0.25))
 
 
-def embed_texts_openai(texts: list[str]) -> list[list[float]]:
+def _hash_embedding_input(model: str, text: str) -> str:
+    payload = f"{model}\n{text}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _get_cached_embedding(db: Session, model: str, sha: str) -> EmbeddingCache | None:
+    return db.scalar(
+        select(EmbeddingCache).where(EmbeddingCache.model == model).where(EmbeddingCache.sha256 == sha)
+    )
+
+
+def _store_cached_embedding(db: Session, model: str, sha: str, embedding: list[float]):
+    db.add(
+        EmbeddingCache(
+            model=model,
+            sha256=sha,
+            dims=len(embedding),
+            embedding=embedding,
+        )
+    )
+
+
+def embed_texts_openai(texts: list[str], db: Session | None = None) -> list[list[float]]:
     if not rag_enabled:
         raise RuntimeError("RAG is disabled")
     if not openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is required for RAG indexing")
     client = OpenAI(api_key=openai_api_key)
+    max_texts = openai_embed_max_texts_per_call
+    max_chars = openai_embed_max_chars_per_text
+    sanitized = [text[:max_chars] for text in texts]
+    embeddings: list[list[float] | None] = [None] * len(sanitized)
+    pending: list[tuple[int, str, str]] = []
+    owns_db = False
+    if db is None:
+        db = SessionLocal()
+        owns_db = True
 
-    def _call():
-        response = client.embeddings.create(
-            model=openai_embed_model,
-            input=texts,
-            timeout=30,
-        )
-        return [item.embedding for item in response.data]
+    try:
+        for idx, text in enumerate(sanitized):
+            sha = _hash_embedding_input(openai_embed_model, text)
+            cached = _get_cached_embedding(db, openai_embed_model, sha)
+            if cached:
+                embeddings[idx] = cached.embedding
+            else:
+                pending.append((idx, text, sha))
 
-    return _retry(_call)
+        for batch_start in range(0, len(pending), max_texts):
+            batch = pending[batch_start : batch_start + max_texts]
+            inputs = [item[1] for item in batch]
+
+            def _call():
+                response = client.embeddings.create(
+                    model=openai_embed_model,
+                    input=inputs,
+                    timeout=30,
+                )
+                return [item.embedding for item in response.data]
+
+            batch_embeddings = _retry(_call)
+            for (idx, text, sha), embedding in zip(batch, batch_embeddings, strict=False):
+                embeddings[idx] = embedding
+                try:
+                    _store_cached_embedding(db, openai_embed_model, sha, embedding)
+                except IntegrityError:
+                    db.rollback()
+            db.commit()
+    finally:
+        if owns_db:
+            db.close()
+
+    return [embedding or [] for embedding in embeddings]
 
 
 def generate_structured_openai(prompt: str, json_schema: dict) -> tuple[str, dict | None]:
@@ -197,6 +270,7 @@ def generate_structured_openai(prompt: str, json_schema: dict) -> tuple[str, dic
             model=openai_model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_schema", "json_schema": json_schema},
+            max_tokens=openai_response_max_output_tokens,
             timeout=30,
         )
         content = response.choices[0].message.content or ""
@@ -219,22 +293,44 @@ def generate_structured_openai(prompt: str, json_schema: dict) -> tuple[str, dic
 def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
-    return text[:limit] + "…"
+    return text[:limit]
 
 
-def build_llm_prompt(context: dict, risk_table: list[dict]) -> str:
+def build_llm_payload(context: dict, risk_table: list[dict]) -> tuple[dict, dict]:
     findings = []
-    for finding in risk_table:
+    total_evidence = 0
+    total_rag = 0
+    for finding in risk_table[:llm_max_findings]:
+        evidence_quotes = []
+        for quote in (finding.get("evidence_quotes") or []):
+            quote_text = quote.get("quote") or ""
+            if total_evidence + len(quote_text) > llm_max_total_evidence_chars:
+                break
+            evidence_quotes.append(
+                {
+                    "quote": quote_text,
+                    "chunk_index": quote.get("chunk_index"),
+                    "start_char": quote.get("start_char"),
+                    "end_char": quote.get("end_char"),
+                }
+            )
+            total_evidence += len(quote_text)
+
         rag_chunks = []
         rag = finding.get("rag") or {}
-        for chunk in rag.get("chunks", [])[:2]:
+        for chunk in rag.get("chunks", [])[:rag_max_chunks_per_finding]:
+            content = _truncate(chunk.get("content", ""), 600)
+            if total_rag + len(content) > llm_max_total_rag_chars:
+                break
             rag_chunks.append(
                 {
                     "chunk_index": chunk.get("chunk_index"),
-                    "content": _truncate(chunk.get("content", ""), 600),
+                    "content": content,
                     "meta_json": chunk.get("meta_json"),
                 }
             )
+            total_rag += len(content)
+
         findings.append(
             {
                 "check_id": finding.get("check_id"),
@@ -242,15 +338,7 @@ def build_llm_prompt(context: dict, risk_table: list[dict]) -> str:
                 "severity": finding.get("severity"),
                 "what_good_looks_like": finding.get("what_good_looks_like"),
                 "recommendation": finding.get("recommendation"),
-                "evidence_quotes": [
-                    {
-                        "quote": quote.get("quote"),
-                        "chunk_index": quote.get("chunk_index"),
-                        "start_char": quote.get("start_char"),
-                        "end_char": quote.get("end_char"),
-                    }
-                    for quote in (finding.get("evidence_quotes") or [])
-                ],
+                "evidence_quotes": evidence_quotes,
                 "rag_chunks": rag_chunks,
             }
         )
@@ -258,12 +346,23 @@ def build_llm_prompt(context: dict, risk_table: list[dict]) -> str:
         "context": context or {},
         "risk_table": findings,
     }
-    return (
+    stats = {
+        "findings_used": len(findings),
+        "total_evidence_chars": total_evidence,
+        "total_rag_chars": total_rag,
+    }
+    return payload, stats
+
+
+def build_llm_prompt(context: dict, risk_table: list[dict]) -> tuple[str, dict, dict]:
+    payload, stats = build_llm_payload(context, risk_table)
+    prompt = (
         "You are generating an executive summary and negotiation pack based only on the provided "
         "risk table findings and evidence quotes. Do not create new evidence. Only include check_ids "
         "present in the risk_table.\n\n"
         f"INPUT JSON:\n{json.dumps(payload, ensure_ascii=False)}"
     )
+    return prompt, payload, stats
 
 
 def _trim_text(value: str | None, limit: int) -> str:
@@ -355,7 +454,7 @@ def maybe_apply_llm(
     if not risk_table:
         return results_copy
     allowed_check_ids = {finding.get("check_id") for finding in risk_table if finding.get("check_id")}
-    prompt = build_llm_prompt(context_json or {}, risk_table)
+    prompt, payload, budget_stats = build_llm_prompt(context_json or {}, risk_table)
     schema = {
         "name": "exec_and_negotiation",
         "schema": {
@@ -396,11 +495,27 @@ def maybe_apply_llm(
     else:
         cleaned = clean_llm_output(parsed, allowed_check_ids, deterministic_exec_summary, deterministic_pack)
     generated_at = datetime.now(timezone.utc).isoformat()
+    input_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    output_hash = hashlib.sha256(json.dumps(cleaned, sort_keys=True).encode("utf-8")).hexdigest()
     results_copy["llm"] = {
         "model": openai_model,
         "generated_at": generated_at,
         "raw": raw_text,
         "cleaned": cleaned,
+        "audit": {
+            "input_sha256": input_hash,
+            "output_sha256": output_hash,
+            "budgets_applied": {
+                "llm_max_findings": llm_max_findings,
+                "llm_max_total_evidence_chars": llm_max_total_evidence_chars,
+                "llm_max_total_rag_chars": llm_max_total_rag_chars,
+                "rag_max_chunks_per_finding": rag_max_chunks_per_finding,
+                "openai_response_max_output_tokens": openai_response_max_output_tokens,
+                "findings_used": budget_stats.get("findings_used"),
+                "total_evidence_chars": budget_stats.get("total_evidence_chars"),
+                "total_rag_chars": budget_stats.get("total_rag_chars"),
+            },
+        },
     }
     results_copy["exec_summary"] = cleaned["exec_summary"]
     results_copy["negotiation_pack"] = cleaned["negotiation_pack"]
@@ -408,7 +523,7 @@ def maybe_apply_llm(
 def retrieve_playbook_chunks(
     db: Session, playbook_id: uuid.UUID, query_text: str, k: int = 6
 ) -> list[PlaybookChunk]:
-    embedding = embed_texts_openai([query_text])[0]
+    embedding = embed_texts_openai([query_text], db=db)[0]
     stmt = (
         select(PlaybookChunk)
         .where(PlaybookChunk.playbook_id == playbook_id)
@@ -818,7 +933,9 @@ def process_review(review_id: str):
                 chunks_found = retrieve_playbook_chunks(
                     db, uuid.UUID(per_finding_rag["playbook_id"]), query, k=6
                 )
-                selected_chunks = select_rag_chunks_for_finding(chunks_found, finding, max_chunks=2)
+                selected_chunks = select_rag_chunks_for_finding(
+                    chunks_found, finding, max_chunks=rag_max_chunks_per_finding
+                )
                 rag_chunks = []
                 total_chars = 0
                 for chunk in selected_chunks:
@@ -931,7 +1048,7 @@ def index_playbook(playbook_id: str):
                         }
                     )
 
-        embeddings = embed_texts_openai([chunk["content"] for chunk in chunks])
+        embeddings = embed_texts_openai([chunk["content"] for chunk in chunks], db=db)
         for chunk, embedding in zip(chunks, embeddings, strict=False):
             db.add(
                 PlaybookChunk(
@@ -993,6 +1110,12 @@ def rerun_llm(review_id: str):
     finally:
         db.close()
 from datetime import datetime, timezone
+
 llm_enabled = os.getenv("LLM_ENABLED", "false").lower() in {"1", "true", "yes"}
 llm_provider = os.getenv("LLM_PROVIDER", "openai").lower()
 openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+openai_response_max_output_tokens = int(os.getenv("OPENAI_RESPONSE_MAX_OUTPUT_TOKENS", "600"))
+rag_max_chunks_per_finding = int(os.getenv("RAG_MAX_CHUNKS_PER_FINDING", "1"))
+llm_max_findings = int(os.getenv("LLM_MAX_FINDINGS", "12"))
+llm_max_total_evidence_chars = int(os.getenv("LLM_MAX_TOTAL_EVIDENCE_CHARS", "3000"))
+llm_max_total_rag_chars = int(os.getenv("LLM_MAX_TOTAL_RAG_CHARS", "2000"))
