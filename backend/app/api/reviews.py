@@ -145,7 +145,19 @@ def get_rag(review_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Review not found")
     if not review.results_json or "rag" not in review.results_json:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="RAG not ready")
-    return review.results_json.get("rag")
+    findings = review.results_json.get("risk_table") or []
+    per_finding = [
+        {
+            "check_id": finding.get("check_id"),
+            "chunks": len((finding.get("rag") or {}).get("chunks") or []),
+        }
+        for finding in findings
+        if finding.get("check_id")
+    ]
+    return {
+        "global": review.results_json.get("rag"),
+        "per_finding": per_finding,
+    }
 
 
 @router.post("/reviews/{review_id}/rerun_llm")

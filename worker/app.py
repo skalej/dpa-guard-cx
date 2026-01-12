@@ -222,9 +222,19 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit] + "…"
 
 
-def build_llm_prompt(context: dict, risk_table: list[dict], rag: dict | None) -> str:
+def build_llm_prompt(context: dict, risk_table: list[dict]) -> str:
     findings = []
     for finding in risk_table:
+        rag_chunks = []
+        rag = finding.get("rag") or {}
+        for chunk in rag.get("chunks", [])[:2]:
+            rag_chunks.append(
+                {
+                    "chunk_index": chunk.get("chunk_index"),
+                    "content": _truncate(chunk.get("content", ""), 600),
+                    "meta_json": chunk.get("meta_json"),
+                }
+            )
         findings.append(
             {
                 "check_id": finding.get("check_id"),
@@ -241,24 +251,11 @@ def build_llm_prompt(context: dict, risk_table: list[dict], rag: dict | None) ->
                     }
                     for quote in (finding.get("evidence_quotes") or [])
                 ],
+                "rag_chunks": rag_chunks,
             }
         )
-    rag_block = []
-    if rag:
-        for entry in rag.get("top_chunks", []):
-            chunks = []
-            for chunk in entry.get("chunks", [])[:6]:
-                chunks.append(
-                    {
-                        "chunk_index": chunk.get("chunk_index"),
-                        "content": _truncate(chunk.get("content", ""), 600),
-                        "meta_json": chunk.get("meta_json"),
-                    }
-                )
-            rag_block.append({"query": entry.get("query"), "chunks": chunks})
     payload = {
         "context": context or {},
-        "rag": rag_block,
         "risk_table": findings,
     }
     return (
@@ -358,8 +355,7 @@ def maybe_apply_llm(
     if not risk_table:
         return results_copy
     allowed_check_ids = {finding.get("check_id") for finding in risk_table if finding.get("check_id")}
-    rag = results_copy.get("rag")
-    prompt = build_llm_prompt(context_json or {}, risk_table, rag)
+    prompt = build_llm_prompt(context_json or {}, risk_table)
     schema = {
         "name": "exec_and_negotiation",
         "schema": {
@@ -713,6 +709,7 @@ def process_review(review_id: str):
             exec_summary = f"{doc_type['warnings'][0]} {exec_summary}"
 
         rag_payload = None
+        per_finding_rag = {}
         if rag_enabled:
             selected_playbook_id = review.playbook_id
             if not selected_playbook_id:
@@ -750,6 +747,35 @@ def process_review(review_id: str):
                     "queries": queries,
                     "top_chunks": top_chunks,
                 }
+                per_finding_rag = {"playbook_id": str(selected_playbook_id)}
+
+        if rag_enabled and per_finding_rag.get("playbook_id"):
+            max_total_chars = 1200
+            for finding in findings:
+                query = f"{finding.get('check_id')} {finding.get('title')} {finding.get('recommendation') or ''}"
+                chunks_found = retrieve_playbook_chunks(
+                    db, uuid.UUID(per_finding_rag["playbook_id"]), query, k=2
+                )
+                rag_chunks = []
+                total_chars = 0
+                for chunk in chunks_found:
+                    content = _truncate(chunk.content or "", 600)
+                    if not content:
+                        continue
+                    remaining = max_total_chars - total_chars
+                    if remaining <= 0:
+                        break
+                    if len(content) > remaining:
+                        content = content[:remaining]
+                    rag_chunks.append(
+                        {
+                            "chunk_index": chunk.chunk_index,
+                            "content": content,
+                            "meta_json": chunk.meta_json,
+                        }
+                    )
+                    total_chars += len(content)
+                finding["rag"] = {"chunks": rag_chunks}
 
         negotiation_pack = build_deterministic_pack(findings)
 
