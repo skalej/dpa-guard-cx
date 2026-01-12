@@ -1,27 +1,35 @@
 import io
+import json
 import os
 import re
+import time
 import uuid
 from pathlib import Path
 
 import boto3
 from docx import Document
+from openai import OpenAI
+from openai._exceptions import APIConnectionError, APIError, APITimeoutError, RateLimitError
+from pgvector.sqlalchemy import Vector
 from pypdf import PdfReader
 import yaml
 
 from negotiation_templates import get_template
 from celery import Celery
-from sqlalchemy import Column, DateTime, String, Text, create_engine, func, select
+from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine, func, select
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 redis_url = os.getenv("DPA_REDIS_URL", "redis://localhost:6379/0")
 database_url = os.getenv("DPA_DATABASE_URL", "postgresql+psycopg2://dpa:dpa@localhost:5432/dpa")
-s3_endpoint = os.getenv("DPA_S3_ENDPOINT", "http://localhost:9000")
+s3_endpoint = os.getenv("S3_INTERNAL_ENDPOINT", os.getenv("DPA_S3_ENDPOINT", "http://localhost:9000"))
 s3_access_key = os.getenv("DPA_S3_ACCESS_KEY", "minio")
 s3_secret_key = os.getenv("DPA_S3_SECRET_KEY", "minio123")
 s3_bucket = os.getenv("DPA_S3_BUCKET", "dpa-guard")
 s3_region = os.getenv("DPA_S3_REGION", "us-east-1")
+rag_enabled = os.getenv("RAG_ENABLED", "false").lower() in {"1", "true", "yes"}
+openai_api_key = os.getenv("OPENAI_API_KEY")
+openai_embed_model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
 
 celery_app = Celery("dpa_guard", broker=redis_url, backend=redis_url)
 
@@ -62,6 +70,7 @@ class Review(Base):
     results_json = Column(JSONB, nullable=True)
     extracted_text = Column(Text, nullable=True)
     extracted_meta = Column(JSONB, nullable=True)
+    playbook_id = Column(UUID(as_uuid=True), nullable=True)
     source_object_key = Column(Text, nullable=True)
     source_filename = Column(Text, nullable=True)
     source_mime = Column(Text, nullable=True)
@@ -73,6 +82,37 @@ class Review(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class Playbook(Base):
+    __tablename__ = "playbooks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(Text, nullable=True)
+    version = Column(String(32), nullable=True)
+    source_object_key = Column(Text, nullable=True)
+    source_filename = Column(Text, nullable=True)
+    status = Column(String(32), nullable=False, default="uploaded")
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class PlaybookChunk(Base):
+    __tablename__ = "playbook_chunks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    playbook_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    chunk_index = Column(Integer, nullable=False)
+    content = Column(Text, nullable=False)
+    meta_json = Column(JSONB, nullable=True)
+    embedding = Column(Vector(1536), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 def get_s3_client():
@@ -115,6 +155,100 @@ def chunk_text(
         chunks.append({"index": index, "start_char": start, "end_char": end})
         index += 1
         start += step
+    return chunks
+
+
+def _retry(func, attempts: int = 2):
+    for attempt in range(attempts):
+        try:
+            return func()
+        except (APIConnectionError, APIError, RateLimitError, APITimeoutError):
+            if attempt + 1 >= attempts:
+                raise
+            time.sleep(0.5)
+
+
+def embed_texts_openai(texts: list[str]) -> list[list[float]]:
+    if not rag_enabled:
+        raise RuntimeError("RAG is disabled")
+    if not openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for RAG indexing")
+    client = OpenAI(api_key=openai_api_key)
+
+    def _call():
+        response = client.embeddings.create(
+            model=openai_embed_model,
+            input=texts,
+            timeout=30,
+        )
+        return [item.embedding for item in response.data]
+
+    return _retry(_call)
+
+
+def retrieve_playbook_chunks(
+    db: Session, playbook_id: uuid.UUID, query_text: str, k: int = 6
+) -> list[PlaybookChunk]:
+    embedding = embed_texts_openai([query_text])[0]
+    stmt = (
+        select(PlaybookChunk)
+        .where(PlaybookChunk.playbook_id == playbook_id)
+        .order_by(PlaybookChunk.embedding.cosine_distance(embedding))
+        .limit(k)
+    )
+    return db.scalars(stmt).all()
+
+
+def _extract_playbook_text(filename: str, data: bytes) -> str:
+    lower = filename.lower()
+    if lower.endswith(".pdf"):
+        reader = PdfReader(io.BytesIO(data))
+        return "\n\n".join((page.extract_text() or "") for page in reader.pages)
+    if lower.endswith(".docx"):
+        doc = Document(io.BytesIO(data))
+        return "\n\n".join(p.text for p in doc.paragraphs)
+    return data.decode("utf-8", errors="ignore")
+
+
+def _parse_structured_playbook(data: bytes) -> list[dict] | None:
+    text = data.decode("utf-8", errors="ignore")
+    try:
+        parsed = yaml.safe_load(text)
+    except Exception:
+        parsed = None
+    if not parsed:
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+    if not isinstance(parsed, dict) or "checks" not in parsed:
+        return None
+    checks = parsed.get("checks") or []
+    if not isinstance(checks, list):
+        return None
+    chunks = []
+    for idx, check in enumerate(checks):
+        if not isinstance(check, dict):
+            continue
+        text_parts = [
+            check.get("title"),
+            check.get("what_good_looks_like"),
+            check.get("recommendation"),
+            " ".join(check.get("patterns") or []),
+        ]
+        content = "\n".join(part for part in text_parts if part)
+        if not content:
+            continue
+        chunks.append(
+            {
+                "chunk_index": idx,
+                "content": content,
+                "meta_json": {
+                    "check_id": check.get("check_id"),
+                    "severity": check.get("severity"),
+                },
+            }
+        )
     return chunks
 
 
@@ -300,6 +434,45 @@ def process_review(review_id: str):
         if doc_type["warnings"]:
             exec_summary = f"{doc_type['warnings'][0]} {exec_summary}"
 
+        rag_payload = None
+        if rag_enabled:
+            selected_playbook_id = review.playbook_id
+            if not selected_playbook_id:
+                selected_playbook = db.scalar(
+                    select(Playbook).where(Playbook.status == "ready").order_by(Playbook.created_at.desc())
+                )
+                selected_playbook_id = selected_playbook.id if selected_playbook else None
+            if selected_playbook_id:
+                queries = [
+                    "breach notification timeline",
+                    "subprocessor objection and authorization",
+                    "international transfers and SCCs",
+                    "audit and inspection rights",
+                    "deletion or return of data upon termination",
+                    "processing on documented instructions",
+                ]
+                top_chunks = []
+                for query in queries:
+                    chunks_found = retrieve_playbook_chunks(db, selected_playbook_id, query, k=6)
+                    top_chunks.append(
+                        {
+                            "query": query,
+                            "chunks": [
+                                {
+                                    "chunk_index": chunk.chunk_index,
+                                    "content": chunk.content,
+                                    "meta_json": chunk.meta_json,
+                                }
+                                for chunk in chunks_found
+                            ],
+                        }
+                    )
+                rag_payload = {
+                    "playbook_id": str(selected_playbook_id),
+                    "queries": queries,
+                    "top_chunks": top_chunks,
+                }
+
         negotiation_pack = []
         for finding in findings:
             template = get_template(finding.get("check_id", ""))
@@ -330,6 +503,8 @@ def process_review(review_id: str):
                 "doc_type_score": {"dpa": doc_type["dpa"], "non_dpa": doc_type["non_dpa"]},
             },
         }
+        if rag_payload:
+            review.results_json["rag"] = rag_payload
         if doc_type["warnings"]:
             review.results_json["warnings"] = doc_type["warnings"]
         review.status = "completed"
@@ -343,6 +518,82 @@ def process_review(review_id: str):
             review.status = "failed"
             review.error_message = str(exc)
             db.add(review)
+            db.commit()
+        return {"status": "failed"}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="index_playbook")
+def index_playbook(playbook_id: str):
+    # IMPORTANT: never log raw playbook text; only IDs/status/metadata.
+    db: Session = SessionLocal()
+    try:
+        try:
+            playbook_uuid = uuid.UUID(playbook_id)
+        except ValueError:
+            return {"status": "failed"}
+
+        playbook = db.scalar(select(Playbook).where(Playbook.id == playbook_uuid))
+        if not playbook:
+            return {"status": "not_found"}
+
+        playbook.status = "indexing"
+        playbook.error_message = None
+        db.add(playbook)
+        db.commit()
+
+        if not rag_enabled:
+            playbook.status = "failed"
+            playbook.error_message = "RAG is disabled"
+            db.add(playbook)
+            db.commit()
+            return {"status": "failed"}
+
+        s3 = get_s3_client()
+        obj = s3.get_object(Bucket=s3_bucket, Key=playbook.source_object_key)
+        data = obj["Body"].read()
+
+        structured_chunks = _parse_structured_playbook(data)
+        chunks = []
+        if structured_chunks is not None:
+            chunks = structured_chunks
+        else:
+            text = normalize_text(_extract_playbook_text(playbook.source_filename or "", data))
+            chunk_ranges = chunk_text(text, chunk_size=1200, overlap=150)
+            for chunk in chunk_ranges:
+                content = text[chunk["start_char"] : chunk["end_char"]]
+                chunks.append(
+                    {
+                        "chunk_index": chunk["index"],
+                        "content": content,
+                        "meta_json": {"start_char": chunk["start_char"], "end_char": chunk["end_char"]},
+                    }
+                )
+
+        embeddings = embed_texts_openai([chunk["content"] for chunk in chunks])
+        for chunk, embedding in zip(chunks, embeddings, strict=False):
+            db.add(
+                PlaybookChunk(
+                    playbook_id=playbook_uuid,
+                    chunk_index=chunk["chunk_index"],
+                    content=chunk["content"],
+                    meta_json=chunk.get("meta_json"),
+                    embedding=embedding,
+                )
+            )
+        playbook.status = "ready"
+        db.add(playbook)
+        db.commit()
+        return {"status": "ready"}
+    except Exception as exc:  # noqa: BLE001
+        playbook = None
+        if "playbook_uuid" in locals():
+            playbook = db.scalar(select(Playbook).where(Playbook.id == playbook_uuid))
+        if playbook:
+            playbook.status = "failed"
+            playbook.error_message = str(exc)
+            db.add(playbook)
             db.commit()
         return {"status": "failed"}
     finally:

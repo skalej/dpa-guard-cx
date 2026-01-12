@@ -2,10 +2,7 @@ import uuid
 
 from sqlalchemy import Column, DateTime, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import declarative_base
-
-Base = declarative_base()
-
+from app.models.base import Base
 
 class Review(Base):
     __tablename__ = "reviews"
@@ -16,6 +13,7 @@ class Review(Base):
     results_json = Column(JSONB, nullable=True)
     extracted_text = Column(Text, nullable=True)
     extracted_meta = Column(JSONB, nullable=True)
+    playbook_id = Column(UUID(as_uuid=True), nullable=True)
     export_object_key = Column(Text, nullable=True)
     export_created_at = Column(DateTime(timezone=True), nullable=True)
     source_object_key = Column(Text, nullable=True)

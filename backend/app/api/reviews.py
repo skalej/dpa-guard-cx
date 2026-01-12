@@ -31,6 +31,7 @@ ALLOWED_MIME_TYPES = {
 class CreateReviewRequest(BaseModel):
     context: dict[str, Any] | None = None
     vendor_name: str | None = None
+    playbook_id: uuid.UUID | None = None
 
 
 class CreateReviewResponse(BaseModel):
@@ -44,6 +45,7 @@ def create_review(payload: CreateReviewRequest, db: Session = Depends(get_db)):
     review = Review(
         status="draft",
         context_json={"context": payload.context, "vendor_name": payload.vendor_name},
+        playbook_id=payload.playbook_id,
     )
     db.add(review)
     db.commit()
@@ -113,6 +115,7 @@ def get_review(review_id: uuid.UUID, db: Session = Depends(get_db)):
     return {
         "id": str(review.id),
         "status": review.status,
+        "playbook_id": str(review.playbook_id) if review.playbook_id else None,
         "source_filename": review.source_filename,
         "source_object_key": review.source_object_key,
         "source_mime": review.source_mime,
@@ -131,6 +134,17 @@ def get_results(review_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Results not ready")
 
     return review.results_json
+
+
+@router.get("/reviews/{review_id}/rag")
+def get_rag(review_id: uuid.UUID, db: Session = Depends(get_db)):
+    # TODO: protect this endpoint (internal/dev only).
+    review = db.scalar(select(Review).where(Review.id == review_id))
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    if not review.results_json or "rag" not in review.results_json:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="RAG not ready")
+    return review.results_json.get("rag")
 
 
 @router.get("/reviews/{review_id}/text")
@@ -281,10 +295,3 @@ def export_pdf(review_id: uuid.UUID, db: Session = Depends(get_db)):
         response["url"] = None
         response["note"] = "Presigned URL unavailable; fetch from MinIO console."
     return response
-
-
-@router.get("/playbook/versions")
-def playbook_versions():
-    from app.playbooks.loader import list_playbooks
-
-    return {"playbooks": list_playbooks()}

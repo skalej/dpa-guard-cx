@@ -80,3 +80,13 @@ curl -s "$API/reviews/$REVIEW_ID/export/pdf" | python -m json.tool
 ```
 
 Set `S3_PUBLIC_ENDPOINT` (e.g., `http://127.0.0.1:9000`) so presigned URLs are browser-accessible from the host. Use `S3_INTERNAL_ENDPOINT` for in-network access (e.g., `http://minio:9000`).
+
+## Playbook RAG smoke test
+```bash
+export RAG_ENABLED=true
+export OPENAI_API_KEY=your_key
+PB_ID=$(curl -s -X POST "$API/playbooks/upload" -F "file=@backend/app/playbooks/eu_controller_v0_1.yaml" | python -c 'import json,sys; print(json.load(sys.stdin)[\"id\"])')
+sleep 2
+curl -s "$API/playbook/versions" | python -m json.tool
+curl -s "$API/playbooks/$PB_ID/search?q=breach%20notification&k=3" | python -m json.tool
+```

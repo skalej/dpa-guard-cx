@@ -5,7 +5,9 @@ from sqlalchemy import pool
 from alembic import context
 
 from app.core.config import settings
-from app.models.review import Base
+from app.models.base import Base
+import app.models.playbook  # noqa: F401
+import app.models.review  # noqa: F401
 
 config = context.config
 
