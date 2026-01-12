@@ -23,7 +23,40 @@ class RagSelectionTests(unittest.TestCase):
             {"meta_json": {}, "content": "second"},
         ]
         selected = select_rag_chunks_for_finding(chunks, finding, max_chunks=2)
-        self.assertEqual(selected[0]["content"], "first")
+        self.assertEqual(selected, [])
+
+    def test_relevant_heading_kept(self):
+        finding = {"check_id": "subprocessor_authorization", "title": "Subprocessor Authorization"}
+        chunks = [
+            {"meta_json": {"heading": "DPA-DEL-01 – Deletion/Return"}, "content": "del"},
+            {"meta_json": {"heading": "DPA-SUB-01 – Subprocessors"}, "content": "sub"},
+        ]
+        selected = select_rag_chunks_for_finding(chunks, finding, max_chunks=2)
+        self.assertEqual(selected[0]["content"], "sub")
+
+    def test_purpose_limitation_synonym_matches(self):
+        finding = {
+            "check_id": "purpose_limitation_and_instructions",
+            "title": "Purpose Limitation and Documented Instructions",
+        }
+        chunks = [
+            {"meta_json": {"heading": "Processor Obligations"}, "content": "po"},
+            {"meta_json": {"heading": "DPA-SUB-01 – Subprocessors"}, "content": "sub"},
+        ]
+        selected = select_rag_chunks_for_finding(chunks, finding, max_chunks=2)
+        self.assertEqual(selected[0]["content"], "po")
+
+    def test_confidentiality_synonym_matches(self):
+        finding = {
+            "check_id": "confidentiality_of_personnel",
+            "title": "Confidentiality of Personnel",
+        }
+        chunks = [
+            {"meta_json": {"heading": "Confidentiality"}, "content": "conf"},
+            {"meta_json": {"heading": "DPA-DEL-01 – Deletion/Return"}, "content": "del"},
+        ]
+        selected = select_rag_chunks_for_finding(chunks, finding, max_chunks=2)
+        self.assertEqual(selected[0]["content"], "conf")
 
 
 if __name__ == "__main__":

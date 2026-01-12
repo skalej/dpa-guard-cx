@@ -160,6 +160,56 @@ def get_rag(review_id: uuid.UUID, db: Session = Depends(get_db)):
     }
 
 
+@router.get("/reviews/{review_id}/explain")
+def explain_review(review_id: uuid.UUID, db: Session = Depends(get_db)):
+    review = db.scalar(select(Review).where(Review.id == review_id))
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    if review.status != "completed" or not review.results_json:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Results not ready")
+
+    results = review.results_json
+    findings = results.get("risk_table") or []
+    negotiation_pack = {item.get("check_id"): item for item in results.get("negotiation_pack") or []}
+
+    response_findings = []
+    for finding in findings:
+        check_id = finding.get("check_id")
+        if not check_id:
+            continue
+        entry = {
+            "check_id": check_id,
+            "title": finding.get("title"),
+            "severity": finding.get("severity"),
+            "recommendation": finding.get("recommendation"),
+            "what_good_looks_like": finding.get("what_good_looks_like"),
+            "evidence_quotes": finding.get("evidence_quotes") or [],
+        }
+        rag = (finding.get("rag") or {}).get("chunks") or []
+        if rag:
+            first = rag[0]
+            meta = first.get("meta_json") or {}
+            entry["playbook_guidance"] = {
+                "heading": meta.get("heading"),
+                "content": (first.get("content") or "")[:600],
+            }
+        negotiation = negotiation_pack.get(check_id)
+        if negotiation:
+            entry["negotiation"] = {
+                "ask": negotiation.get("ask"),
+                "fallback": negotiation.get("fallback"),
+                "rationale": negotiation.get("rationale"),
+            }
+        response_findings.append(entry)
+
+    return {
+        "review_id": str(review.id),
+        "status": review.status,
+        "playbook_id": str(review.playbook_id) if review.playbook_id else None,
+        "findings": response_findings,
+    }
+
+
 @router.post("/reviews/{review_id}/rerun_llm")
 def rerun_llm(review_id: uuid.UUID, db: Session = Depends(get_db)):
     review = db.scalar(select(Review).where(Review.id == review_id))

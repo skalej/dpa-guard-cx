@@ -93,7 +93,13 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     finally:
         db.close()
 
-    return [embedding or [] for embedding in embeddings]
+    normalized = []
+    for embedding in embeddings:
+        if embedding is None:
+            normalized.append([])
+        else:
+            normalized.append(list(embedding))
+    return normalized
 
 
 def generate_structured(prompt: str, json_schema: dict) -> dict:

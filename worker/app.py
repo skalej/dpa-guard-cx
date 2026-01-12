@@ -255,7 +255,13 @@ def embed_texts_openai(texts: list[str], db: Session | None = None) -> list[list
         if owns_db:
             db.close()
 
-    return [embedding or [] for embedding in embeddings]
+    normalized = []
+    for embedding in embeddings:
+        if embedding is None:
+            normalized.append([])
+        else:
+            normalized.append(list(embedding))
+    return normalized
 
 
 def generate_structured_openai(prompt: str, json_schema: dict) -> tuple[str, dict | None]:
@@ -598,15 +604,64 @@ def validate_quote(extracted_text: str, quote: str, start: int, end: int) -> tup
 SECTION_HEADING_RE = re.compile(r"^(?P<heading>[A-Z]{2,10}-[A-Z]{2,10}-\d{2}\b.*)$", re.MULTILINE)
 
 
+def _is_title_case_heading(line: str, next_line: str | None) -> bool:
+    text = line.strip()
+    if not (5 <= len(text) <= 80):
+        return False
+    if text.endswith("."):
+        return False
+    if text.count(":") > 1:
+        return False
+    if re.search(r"[;,?!]", text):
+        return False
+    if re.match(r"^[-*•]\s", text):
+        return False
+    if re.match(r"^\d+(\.\d+)*[.)]?\s", text):
+        return False
+    words = [w for w in re.split(r"\s+", text) if re.search(r"[A-Za-z]", w)]
+    if not words:
+        return False
+    letters = [c for c in text if c.isalpha()]
+    if letters and all(c.isupper() for c in letters):
+        return True
+    title_case = sum(1 for w in words if w[0].isupper())
+    if title_case / len(words) < 0.6:
+        return False
+    if next_line:
+        next_text = next_line.strip()
+        if next_text and (
+            SECTION_HEADING_RE.match(next_text) or _is_title_case_heading(next_text, None)
+        ):
+            return False
+    return True
+
+
 def _split_playbook_sections(text: str, chunk_size: int = 1800, overlap: int = 200) -> list[dict]:
-    matches = list(SECTION_HEADING_RE.finditer(text))
-    if not matches:
+    lines = text.splitlines(keepends=True)
+    headings = []
+    offset = 0
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            offset += len(line)
+            continue
+        next_line = None
+        for j in range(idx + 1, len(lines)):
+            if lines[j].strip():
+                next_line = lines[j]
+                break
+        if SECTION_HEADING_RE.match(stripped):
+            headings.append((offset, stripped))
+        elif _is_title_case_heading(stripped, next_line):
+            headings.append((offset, stripped))
+        offset += len(line)
+
+    if not headings:
         return []
+    headings.sort(key=lambda item: item[0])
     sections = []
-    for index, match in enumerate(matches):
-        start = match.start()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        heading = match.group("heading").strip()
+    for index, (start, heading) in enumerate(headings):
+        end = headings[index + 1][0] if index + 1 < len(headings) else len(text)
         sections.append({"heading": heading, "start": start, "end": end})
 
     chunks = []
@@ -656,6 +711,37 @@ def _tokenize_title(title: str | None) -> list[str]:
     return [token for token in re.split(r"[^a-zA-Z0-9]+", title.lower()) if len(token) >= 4]
 
 
+CHECK_ID_SYNONYMS = {
+    "purpose_limitation_and_instructions": [
+        "instructions",
+        "processor obligations",
+        "processing instructions",
+        "controller instructions",
+        "purpose limitation",
+        "scope",
+        "documented instructions",
+    ],
+    "confidentiality_of_personnel": [
+        "confidentiality",
+        "authorized persons",
+        "personnel",
+        "staff",
+        "employees",
+        "duty of confidentiality",
+    ],
+}
+
+
+def _match_keyword(heading_lower: str, keyword: str) -> bool:
+    if " " in keyword:
+        return keyword in heading_lower
+    if re.search(rf"\b{re.escape(keyword)}\b", heading_lower):
+        return True
+    if not keyword.endswith("s") and re.search(rf"\b{re.escape(keyword)}s\b", heading_lower):
+        return True
+    return False
+
+
 def _get_chunk_heading(chunk) -> str | None:
     meta = None
     if isinstance(chunk, dict):
@@ -675,8 +761,12 @@ def _score_chunk_for_finding(finding: dict, heading: str | None) -> int:
     heading_lower = heading.lower()
     score = 0
     title_tokens = _tokenize_title(finding.get("title"))
-    if any(token in heading_lower for token in title_tokens):
+    if any(_match_keyword(heading_lower, token) for token in title_tokens):
         score += 3
+    for keyword in CHECK_ID_SYNONYMS.get(finding.get("check_id"), []):
+        if _match_keyword(heading_lower, keyword):
+            score += 3
+            break
     check_id = finding.get("check_id") or ""
     prefix_map = {
         "breach_notification_timeline": ["BR"],
@@ -694,7 +784,9 @@ def _score_chunk_for_finding(finding: dict, heading: str | None) -> int:
     return score
 
 
-def select_rag_chunks_for_finding(chunks: list, finding: dict, max_chunks: int = 2) -> list:
+def select_rag_chunks_for_finding(
+    chunks: list, finding: dict, max_chunks: int = 2, min_score: int = 3
+) -> list:
     scored = []
     for idx, chunk in enumerate(chunks):
         heading = _get_chunk_heading(chunk)
@@ -704,6 +796,8 @@ def select_rag_chunks_for_finding(chunks: list, finding: dict, max_chunks: int =
     if not scored:
         return []
     best_score, _, best_chunk = scored[0]
+    if best_score < min_score:
+        return []
     selected = [best_chunk]
     if max_chunks > 1 and len(scored) > 1:
         second_score, _, second_chunk = scored[1]

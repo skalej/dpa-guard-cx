@@ -69,10 +69,13 @@ curl -s "$API/reviews/$REVIEW_ID/text" | python -m json.tool
 
 # Results include evidence quotes with spans
 curl -s "$API/reviews/$REVIEW_ID/results" | python -m json.tool
+
+# Explain findings with evidence + playbook guidance + negotiation asks
+curl -s "$API/reviews/$REVIEW_ID/explain" | python -m json.tool
 ```
 
 Note: For meaningful playbook results, upload a real DPA/contract PDF (not PRD/TDD docs).
-For best playbook retrieval from PDF/text, structure sections with headings like `DPA-BR-01 – Breach Notification`.
+For best playbook retrieval from PDF/text, structure sections with headings like `DPA-BR-01 – Breach Notification` or clear plain headings such as `Processor Obligations` and `Confidentiality`.
 
 PDF export:
 ```bash
