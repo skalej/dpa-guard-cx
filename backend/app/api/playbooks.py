@@ -1,7 +1,7 @@
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -30,14 +30,21 @@ def _safe_name(filename: str | None) -> str:
     return Path(filename or "upload").name
 
 
+def _is_allowed_playbook_upload(file: UploadFile) -> bool:
+    if file.content_type in ALLOWED_PLAYBOOK_TYPES:
+        return True
+    suffix = Path(file.filename or "").suffix.lower()
+    return suffix in {".pdf", ".json", ".yaml", ".yml", ".txt", ".md", ".markdown"}
+
+
 @router.post("/playbooks/upload")
 def upload_playbook(
     file: UploadFile = File(...),
-    title: str | None = None,
-    version: str | None = None,
+    title: str | None = Form(None),
+    version: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
-    if file.content_type not in ALLOWED_PLAYBOOK_TYPES:
+    if not _is_allowed_playbook_upload(file):
         raise HTTPException(status_code=400, detail="Unsupported playbook type")
 
     playbook = Playbook(title=title, version=version, status="uploaded")

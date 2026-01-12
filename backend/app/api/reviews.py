@@ -1,4 +1,5 @@
 import io
+import re
 import uuid
 from datetime import datetime, timezone
 from datetime import datetime
@@ -11,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.core.celery_app import celery_app
@@ -255,91 +256,7 @@ def export_pdf(review_id: uuid.UUID, db: Session = Depends(get_db)):
     if isinstance(review.context_json, dict):
         vendor_name = review.context_json.get("vendor_name")
 
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, title="DPA Guard Report")
-    styles = getSampleStyleSheet()
-    story = []
-
-    title = vendor_name or f"Review {review_id}"
-    story.append(Paragraph(title, styles["Title"]))
-    story.append(Spacer(1, 12))
-
-    warnings = results.get("warnings") or []
-    if warnings:
-        story.append(Paragraph("Warnings", styles["Heading2"]))
-        for warning in warnings:
-            story.append(Paragraph(f"- {warning}", styles["BodyText"]))
-        story.append(Spacer(1, 12))
-
-    story.append(Paragraph("Executive Summary", styles["Heading2"]))
-    story.append(Paragraph(results.get("exec_summary", ""), styles["BodyText"]))
-    story.append(Spacer(1, 12))
-
-    extraction = results.get("extraction", {})
-    extraction_table = Table(
-        [
-            ["Chars", extraction.get("chars"), "Pages", extraction.get("pages")],
-            ["Chunks", extraction.get("chunks"), "Doc Type Score", extraction.get("doc_type_score")],
-        ]
-    )
-    extraction_table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ]
-        )
-    )
-    story.append(Paragraph("Extraction Stats", styles["Heading2"]))
-    story.append(extraction_table)
-    story.append(Spacer(1, 12))
-
-    risk_table = results.get("risk_table", [])
-    if risk_table:
-        story.append(Paragraph("Risk Table", styles["Heading2"]))
-        table_data = [["Check", "Severity", "Evidence (short)"]]
-        for finding in risk_table:
-            quote = ""
-            quotes = finding.get("evidence_quotes") or []
-            if quotes:
-                quote = quotes[0].get("quote", "")[:240]
-            table_data.append([finding.get("title"), finding.get("severity"), quote])
-        risk_table_el = Table(table_data, colWidths=[180, 80, 280])
-        risk_table_el.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ]
-            )
-        )
-        story.append(risk_table_el)
-        story.append(Spacer(1, 12))
-
-    negotiation_pack = results.get("negotiation_pack", [])
-    if negotiation_pack:
-        story.append(Paragraph("Negotiation Pack", styles["Heading2"]))
-        for item in negotiation_pack:
-            story.append(Paragraph(item.get("title", ""), styles["Heading3"]))
-            story.append(Paragraph(f"Severity: {item.get('severity')}", styles["BodyText"]))
-            story.append(Paragraph(f"Ask: {item.get('ask')}", styles["BodyText"]))
-            story.append(Paragraph(f"Fallback: {item.get('fallback')}", styles["BodyText"]))
-            story.append(Paragraph(f"Rationale: {item.get('rationale')}", styles["BodyText"]))
-            story.append(Spacer(1, 8))
-
-    for finding in risk_table:
-        quotes = finding.get("evidence_quotes") or []
-        if not quotes:
-            continue
-        story.append(Paragraph(f"Evidence: {finding.get('title')}", styles["Heading3"]))
-        for quote in quotes:
-            story.append(Paragraph(quote.get("quote", ""), styles["BodyText"]))
-        story.append(Spacer(1, 8))
-
-    doc.build(story)
-    buffer.seek(0)
-    pdf_bytes = buffer.read()
+    pdf_bytes = _build_report_pdf(results, vendor_name, str(review_id))
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     object_key = f"reviews/{review_id}/export/report_{timestamp}.pdf"
@@ -369,3 +286,154 @@ def export_pdf(review_id: uuid.UUID, db: Session = Depends(get_db)):
         response["url"] = None
         response["note"] = "Presigned URL unavailable; fetch from MinIO console."
     return response
+
+
+def _shorten(text: str, max_chars: int = 320) -> str:
+    if not text:
+        return ""
+    flattened = re.sub(r"\s+", " ", text).strip()
+    if len(flattened) <= max_chars:
+        return flattened
+    return flattened[:max_chars] + "..."
+
+
+def _build_report_pdf(results: dict, vendor_name: str | None, review_id: str) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        title="DPA Guard Report",
+        leftMargin=48,
+        rightMargin=48,
+        topMargin=48,
+        bottomMargin=48,
+    )
+    styles = getSampleStyleSheet()
+    table_style = ParagraphStyle(
+        "TableCell",
+        parent=styles["BodyText"],
+        fontSize=9,
+        leading=11,
+    )
+    header_style = ParagraphStyle(
+        "TableHeader",
+        parent=styles["BodyText"],
+        fontSize=9,
+        leading=11,
+        spaceAfter=2,
+    )
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=styles["Title"],
+        fontSize=16,
+        leading=20,
+    )
+    story = []
+
+    title = vendor_name or f"Review {review_id}"
+    story.append(Paragraph(title, title_style))
+    story.append(Spacer(1, 12))
+
+    warnings = results.get("warnings") or []
+    if warnings:
+        story.append(Paragraph("Warnings", styles["Heading2"]))
+        for warning in warnings:
+            story.append(Paragraph(f"- {warning}", styles["BodyText"]))
+        story.append(Spacer(1, 12))
+
+    story.append(Paragraph("Executive Summary", styles["Heading2"]))
+    story.append(Paragraph(results.get("exec_summary", ""), styles["BodyText"]))
+    story.append(Spacer(1, 12))
+
+    extraction = results.get("extraction", {})
+    extraction_table = Table(
+        [
+            [
+                Paragraph("Chars", header_style),
+                Paragraph(str(extraction.get("chars")), table_style),
+                Paragraph("Pages", header_style),
+                Paragraph(str(extraction.get("pages")), table_style),
+            ],
+            [
+                Paragraph("Chunks", header_style),
+                Paragraph(str(extraction.get("chunks")), table_style),
+                Paragraph("Doc Type Score", header_style),
+                Paragraph(str(extraction.get("doc_type_score")), table_style),
+            ],
+        ]
+    )
+    extraction_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ]
+        )
+    )
+    story.append(Paragraph("Extraction Stats", styles["Heading2"]))
+    story.append(extraction_table)
+    story.append(Spacer(1, 12))
+
+    risk_table = results.get("risk_table", [])
+    if risk_table:
+        story.append(Paragraph("Risk Table", styles["Heading2"]))
+        table_data = [
+            [
+                Paragraph("Check", header_style),
+                Paragraph("Severity", header_style),
+                Paragraph("Evidence (short)", header_style),
+            ]
+        ]
+        for finding in risk_table:
+            quote = ""
+            quotes = finding.get("evidence_quotes") or []
+            if quotes:
+                quote = _shorten(quotes[0].get("quote", ""))
+            table_data.append(
+                [
+                    Paragraph(str(finding.get("title") or ""), table_style),
+                    Paragraph(str(finding.get("severity") or ""), table_style),
+                    Paragraph(quote, table_style),
+                ]
+            )
+        evidence_width = max(doc.width - 220, 200)
+        risk_table_el = Table(
+            table_data, colWidths=[160, 60, evidence_width], repeatRows=1
+        )
+        risk_table_el.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("WORDWRAP", (0, 0), (-1, -1), "LTR"),
+                ]
+            )
+        )
+        story.append(risk_table_el)
+        story.append(Spacer(1, 12))
+
+    negotiation_pack = results.get("negotiation_pack", [])
+    if negotiation_pack:
+        story.append(Paragraph("Negotiation Pack", styles["Heading2"]))
+        for item in negotiation_pack:
+            story.append(Paragraph(item.get("title", ""), styles["Heading3"]))
+            story.append(Paragraph(f"Severity: {item.get('severity')}", styles["BodyText"]))
+            story.append(Paragraph(f"Ask: {item.get('ask')}", styles["BodyText"]))
+            story.append(Paragraph(f"Fallback: {item.get('fallback')}", styles["BodyText"]))
+            story.append(Paragraph(f"Rationale: {item.get('rationale')}", styles["BodyText"]))
+            story.append(Spacer(1, 8))
+
+    for finding in risk_table:
+        quotes = finding.get("evidence_quotes") or []
+        if not quotes:
+            continue
+        story.append(Paragraph(f"Evidence: {finding.get('title')}", styles["Heading3"]))
+        for quote in quotes:
+            story.append(Paragraph(quote.get("quote", ""), styles["BodyText"]))
+        story.append(Spacer(1, 8))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.read()

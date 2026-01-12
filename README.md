@@ -40,6 +40,7 @@ This repository contains the initial scaffold for the DPA Guard MVP. It wires th
   npm install
   npm run dev
   ```
+  Set `NEXT_PUBLIC_API_BASE` (default `http://127.0.0.1:8000`). Open `/reviews/new` to run the flow.
 
 ## Notes
 - Reviews flow stores metadata, uploads to MinIO, and writes placeholder results.
@@ -72,6 +73,14 @@ curl -s "$API/reviews/$REVIEW_ID/results" | python -m json.tool
 
 # Explain findings with evidence + playbook guidance + negotiation asks
 curl -s "$API/reviews/$REVIEW_ID/explain" | python -m json.tool
+
+# Export PDF (signed URL may expire; regenerate if needed)
+curl -s "$API/reviews/$REVIEW_ID/export/pdf" | python -m json.tool
+```
+
+PDF export smoke test (local):
+```bash
+PYTHONPATH=backend python backend/tests/test_pdf_export.py
 ```
 
 Note: For meaningful playbook results, upload a real DPA/contract PDF (not PRD/TDD docs).
