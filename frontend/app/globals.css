@@ -1,0 +1,25 @@
+:root {
+  color-scheme: light;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  background: #f6f3ef;
+  color: #1d1d1d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.container {
+  max-width: 840px;
+  margin: 80px auto;
+  padding: 0 24px;
+}
+
+h1 {
+  font-size: 48px;
+  letter-spacing: -0.02em;
+}
