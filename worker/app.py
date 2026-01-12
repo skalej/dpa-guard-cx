@@ -155,6 +155,23 @@ def normalize_text(text: str) -> str:
     return "\n".join(collapsed).strip()
 
 
+def build_contract_sections(text: str) -> list[dict]:
+    sections = []
+    matches = list(re.finditer(r"^\s*(\d+)\.\s+(.+)$", text, flags=re.MULTILINE))
+    for idx, match in enumerate(matches):
+        start = match.start()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        sections.append(
+            {
+                "num": match.group(1),
+                "title": match.group(2).strip(),
+                "start_char": start,
+                "end_char": end,
+            }
+        )
+    return sections
+
+
 def chunk_text(
     text: str, chunk_size: int = 2000, overlap: int = 200
 ) -> list[dict[str, int]]:
@@ -969,6 +986,7 @@ def process_review(review_id: str):
             "chars": len(normalized),
             "pages": pages,
             "chunks": chunks,
+            "contract_sections": build_contract_sections(normalized),
         }
 
         playbook_id = select_playbook_id(review.context_json or {})

@@ -1,0 +1,241 @@
+playbook:
+  id: dpa-sme-standard-v1
+  version: "1.0"
+  scope: "Data Processing Agreements (GDPR Addendum)"
+  audience: "EU / Germany-based SMEs"
+  disclaimer: "Decision-support only. Not legal advice."
+
+  rules:
+
+    - rule_id: DPA-ROLE-01
+      clause_type: parties_and_roles
+      title: Parties & Roles
+      gdpr_references:
+        - article: "4"
+          description: "Definitions of Controller and Processor"
+        - article: "28"
+          description: "Processor obligations apply only if roles are defined"
+      requirement: Clear identification of Controller and Processor roles.
+      preferred_position: Explicit identification of Controller and Processor.
+      fallback_position: Roles defined implicitly but unambiguous.
+      red_flag: Roles missing or Processor claims independent control.
+      severity: high
+      mandatory: true
+      rationale: GDPR processor obligations depend on correct role allocation.
+      keywords: ["controller", "processor", "acting on behalf"]
+
+    - rule_id: DPA-SCOPE-01
+      clause_type: subject_matter_duration
+      title: Subject Matter & Duration
+      gdpr_references:
+        - article: "28(3)(a)"
+          description: "Subject matter and duration of processing"
+      requirement: Processing purpose and duration must be defined.
+      preferred_position: Explicit purpose and duration.
+      fallback_position: Purpose defined; duration tied to service term.
+      red_flag: Open-ended or undefined processing.
+      severity: medium
+      mandatory: true
+      rationale: Prevents excessive or unrelated processing.
+      keywords: ["purpose", "duration", "term"]
+
+    - rule_id: DPA-SCOPE-02
+      clause_type: nature_purpose
+      title: Nature & Purpose of Processing
+      gdpr_references:
+        - article: "28(3)(a)"
+          description: "Nature and purpose of processing"
+      requirement: Nature and purpose of processing must be described.
+      preferred_position: Clear description aligned with the service.
+      fallback_position: General description referencing service documentation.
+      red_flag: Any business purpose or undefined use.
+      severity: medium
+      mandatory: true
+      rationale: Limits processing to agreed scope.
+      keywords: ["nature", "purpose", "processing"]
+
+    - rule_id: DPA-DATA-01
+      clause_type: data_categories
+      title: Data Categories & Data Subjects
+      gdpr_references:
+        - article: "28(3)(a)"
+          description: "Type of personal data and categories of data subjects"
+      requirement: Categories of personal data and data subjects must be listed.
+      preferred_position: Explicit list of data categories and data subjects.
+      fallback_position: Reference to annex or service description.
+      red_flag: No mention of data categories or data subjects.
+      severity: medium
+      mandatory: true
+      rationale: Enables compliance and risk assessment.
+      keywords: ["personal data", "data subjects", "categories"]
+
+    - rule_id: DPA-INSTR-01
+      clause_type: documented_instructions
+      title: Documented Instructions
+      gdpr_references:
+        - article: "28(3)(a)"
+          description: "Processing only on documented instructions"
+      requirement: Processing only on documented instructions from the Controller.
+      preferred_position: Explicit obligation with instruction hierarchy.
+      fallback_position: Instructions implied through service use.
+      red_flag: Processor determines purposes or scope independently.
+      severity: high
+      mandatory: true
+      rationale: Ensures controller retains control.
+      keywords: ["documented instructions", "controller instructions"]
+
+    - rule_id: DPA-CONF-01
+      clause_type: confidentiality
+      title: Confidentiality of Personnel
+      gdpr_references:
+        - article: "28(3)(b)"
+          description: "Confidentiality of persons authorized to process data"
+      requirement: Authorized personnel must be bound by confidentiality.
+      preferred_position: Explicit confidentiality obligations for all authorized persons.
+      fallback_position: Reference to employment or internal policy obligations.
+      red_flag: No confidentiality requirement.
+      severity: high
+      mandatory: true
+      rationale: Prevents unauthorized disclosure.
+      keywords: ["confidentiality", "authorized personnel"]
+
+    - rule_id: DPA-SEC-01
+      clause_type: security_measures
+      title: Security Measures
+      gdpr_references:
+        - article: "28(3)(c)"
+          description: "Appropriate technical and organizational measures"
+        - article: "32"
+          description: "Security of processing"
+      requirement: Appropriate technical and organizational measures must be implemented.
+      preferred_position: Detailed TOMs or annex aligned with GDPR Art. 32.
+      fallback_position: General security commitment referencing industry standards.
+      red_flag: No security obligation or as-is processing.
+      severity: high
+      mandatory: true
+      rationale: Mandatory security obligation under GDPR.
+      keywords: ["security measures", "technical", "organizational"]
+
+    - rule_id: DPA-SUB-01
+      clause_type: subprocessors
+      title: Subprocessors
+      gdpr_references:
+        - article: "28(2)"
+          description: "Conditions for engaging subprocessors"
+        - article: "28(4)"
+          description: "Subprocessor obligations"
+      requirement: Conditions must govern engagement of subprocessors.
+      preferred_position: Prior notice and right to object.
+      fallback_position: General authorization with notification.
+      red_flag: Unrestricted use of subprocessors without notice.
+      severity: high
+      mandatory: true
+      rationale: Maintains transparency and control.
+      keywords: ["subprocessor", "third party", "authorization"]
+
+    - rule_id: DPA-TR-01
+      clause_type: international_transfers
+      title: International Transfers
+      gdpr_references:
+        - article: "44–49"
+          description: "Transfers of personal data to third countries"
+      requirement: Lawful transfer mechanisms must be in place.
+      preferred_position: SCCs incorporated and transfer locations listed.
+      fallback_position: SCCs referenced generically.
+      red_flag: Transfers allowed without safeguards.
+      severity: high
+      mandatory: true
+      rationale: Required for Chapter V compliance.
+      keywords: ["transfer", "outside EU", "SCC"]
+
+    - rule_id: DPA-BR-01
+      clause_type: breach_notification
+      title: Breach Notification
+      gdpr_references:
+        - article: "28(3)(f)"
+          description: "Assistance in ensuring breach compliance"
+        - article: "33"
+          description: "Notification of a personal data breach"
+      requirement: Processor must notify Controller without undue delay.
+      preferred_position: Explicit timeline such as 72 hours.
+      fallback_position: Without undue delay.
+      red_flag: No breach notification obligation.
+      severity: high
+      mandatory: true
+      rationale: Enables controller to meet notification deadlines.
+      keywords: ["personal data breach", "notify"]
+
+    - rule_id: DPA-DSAR-01
+      clause_type: data_subject_rights
+      title: Assistance with Data Subject Rights
+      gdpr_references:
+        - article: "28(3)(e)"
+          description: "Assistance with data subject rights"
+      requirement: Processor must assist with data subject requests.
+      preferred_position: Explicit assistance obligations.
+      fallback_position: Reasonable assistance upon request.
+      red_flag: Controller solely responsible without processor support.
+      severity: medium
+      mandatory: true
+      rationale: Required to enable rights fulfillment.
+      keywords: ["data subject requests", "assistance"]
+
+    - rule_id: DPA-AUD-01
+      clause_type: audit_rights
+      title: Audit & Inspection Rights
+      gdpr_references:
+        - article: "28(3)(h)"
+          description: "Audits and inspections"
+      requirement: Controller must have audit rights.
+      preferred_position: On-site or third-party audits permitted.
+      fallback_position: Certifications or audit reports.
+      red_flag: No audit rights at all.
+      severity: medium
+      mandatory: true
+      rationale: Ensures accountability.
+      keywords: ["audit", "inspection", "certification"]
+
+    - rule_id: DPA-DEL-01
+      clause_type: deletion_return
+      title: Return or Deletion After Termination
+      gdpr_references:
+        - article: "28(3)(g)"
+          description: "Deletion or return of personal data"
+      requirement: Personal data must be deleted or returned after termination.
+      preferred_position: Deletion or return within a defined timeframe.
+      fallback_position: Deletion or return upon request.
+      red_flag: Retention at processor discretion.
+      severity: high
+      mandatory: true
+      rationale: Prevents unlawful retention.
+      keywords: ["delete", "return", "termination"]
+
+    - rule_id: DPA-PREC-01
+      clause_type: order_of_precedence
+      title: Order of Precedence
+      gdpr_references:
+        - article: "28"
+          description: "Contractual safeguards must not be overridden"
+      requirement: DPA must prevail over conflicting contractual terms.
+      preferred_position: Explicit precedence clause.
+      fallback_position: Implied precedence through annex language.
+      red_flag: Other terms override DPA protections.
+      severity: medium
+      mandatory: false
+      rationale: Prevents silent erosion of GDPR obligations.
+      keywords: ["precedence", "conflict"]
+
+    - rule_id: DPA-LAW-01
+      clause_type: governing_law
+      title: Governing Law & Jurisdiction
+      gdpr_references:
+        - article: "28"
+          description: "Contract must ensure GDPR enforceability"
+      requirement: Governing law must not undermine GDPR protections.
+      preferred_position: EU member state law.
+      fallback_position: Neutral law with GDPR carve-out.
+      red_flag: Non-EU law undermining GDPR rights.
+      severity: low
+      mandatory: false
+      rationale: Supports enforceability and certainty.
+      keywords: ["governing law", "jurisdiction"]

@@ -40,7 +40,7 @@ This repository contains the initial scaffold for the DPA Guard MVP. It wires th
   npm install
   npm run dev
   ```
-  Set `NEXT_PUBLIC_API_BASE` (default `http://127.0.0.1:8000`). Open `/reviews/new` to run the flow.
+  Set `NEXT_PUBLIC_API_BASE` (default `http://127.0.0.1:8000`). Open `/reviews/new` to start, `/reviews` to see recent local reviews, and `/reviews/{id}` for details.
 
 ## Notes
 - Reviews flow stores metadata, uploads to MinIO, and writes placeholder results.
@@ -85,6 +85,12 @@ PYTHONPATH=backend python backend/tests/test_pdf_export.py
 
 Note: For meaningful playbook results, upload a real DPA/contract PDF (not PRD/TDD docs).
 For best playbook retrieval from PDF/text, structure sections with headings like `DPA-BR-01 – Breach Notification` or clear plain headings such as `Processor Obligations` and `Confidentiality`.
+
+## Frontend UX manual check
+1. Start the frontend and backend, then open `http://localhost:3000/reviews/new`.
+2. Upload a PDF and select a playbook (or enter a playbook ID).
+3. After redirect, verify the detail page shows status, exec summary, risk table, and explain panels.
+4. Click "Download PDF" and open the presigned URL in a new tab (regenerate if expired).
 
 PDF export:
 ```bash
